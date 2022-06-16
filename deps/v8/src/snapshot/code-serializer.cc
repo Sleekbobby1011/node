@@ -310,10 +310,11 @@ void CreateInterpreterDataForDeserializedCode(Isolate* isolate,
 
     if (!log_code_creation) continue;
     Handle<AbstractCode> abstract_code = Handle<AbstractCode>::cast(code);
+    Script::InitLineEnds(isolate, script);
     int line_num = script->GetLineNumber(info->StartPosition()) + 1;
     int column_num = script->GetColumnNumber(info->StartPosition()) + 1;
     PROFILE(isolate,
-            CodeCreateEvent(CodeEventListener::FUNCTION_TAG, abstract_code,
+            CodeCreateEvent(LogEventListener::CodeTag::kFunction, abstract_code,
                             info, name_handle, line_num, column_num));
   }
 }
@@ -354,9 +355,9 @@ void FinalizeDeserialization(Isolate* isolate,
                              Handle<SharedFunctionInfo> result,
                              const base::ElapsedTimer& timer) {
   const bool log_code_creation =
-      isolate->logger()->is_listening_to_code_events() ||
+      isolate->v8_file_logger()->is_listening_to_code_events() ||
       isolate->is_profiling() ||
-      isolate->code_event_dispatcher()->IsListeningToCodeEvents();
+      isolate->logger()->is_listening_to_code_events();
 
 #ifndef V8_TARGET_ARCH_ARM
   if (V8_UNLIKELY(FLAG_interpreted_frames_native_stack))
@@ -396,13 +397,13 @@ void FinalizeDeserialization(Isolate* isolate,
               script->GetLineNumber(shared_info->StartPosition()) + 1;
           int column_num =
               script->GetColumnNumber(shared_info->StartPosition()) + 1;
-          PROFILE(
-              isolate,
-              CodeCreateEvent(
-                  shared_info->is_toplevel() ? CodeEventListener::SCRIPT_TAG
-                                             : CodeEventListener::FUNCTION_TAG,
-                  handle(shared_info->abstract_code(isolate), isolate),
-                  shared_info, name, line_num, column_num));
+          PROFILE(isolate,
+                  CodeCreateEvent(
+                      shared_info->is_toplevel()
+                          ? LogEventListener::CodeTag::kScript
+                          : LogEventListener::CodeTag::kFunction,
+                      handle(shared_info->abstract_code(isolate), isolate),
+                      shared_info, name, line_num, column_num));
         }
       }
     }

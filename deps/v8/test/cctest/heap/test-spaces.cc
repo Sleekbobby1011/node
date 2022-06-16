@@ -36,6 +36,7 @@
 #include "src/base/platform/platform.h"
 #include "src/common/globals.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap.h"
 #include "src/heap/large-spaces.h"
 #include "src/heap/memory-allocator.h"
 #include "src/heap/memory-chunk.h"
@@ -159,9 +160,12 @@ static unsigned int PseudorandomAreaSize() {
 TEST(MemoryChunk) {
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
+  SafepointScope safepoint(heap);
 
   v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
   size_t area_size;
+
+  bool jitless = isolate->jitless();
 
   for (int i = 0; i < 100; i++) {
     area_size =
@@ -169,14 +173,32 @@ TEST(MemoryChunk) {
 
     // With CodeRange.
     const size_t code_range_size = 32 * MB;
-    VirtualMemory code_range_reservation(page_allocator, code_range_size,
-                                         nullptr, MemoryChunk::kAlignment);
+    VirtualMemory code_range_reservation(
+        page_allocator, code_range_size, nullptr, MemoryChunk::kAlignment,
+        jitless ? JitPermission::kNoJit : JitPermission::kMapAsJittable);
+
+    base::PageFreeingMode page_freeing_mode =
+        base::PageFreeingMode::kMakeInaccessible;
+
+    // On MacOS on ARM64 the code range reservation must be committed as RWX.
+    if (V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT && !jitless) {
+      page_freeing_mode = base::PageFreeingMode::kDiscard;
+      void* base = reinterpret_cast<void*>(code_range_reservation.address());
+      CHECK(page_allocator->SetPermissions(base, code_range_size,
+                                           PageAllocator::kReadWriteExecute));
+      CHECK(page_allocator->DiscardSystemPages(base, code_range_size));
+    }
+
     CHECK(code_range_reservation.IsReserved());
 
     base::BoundedPageAllocator code_page_allocator(
         page_allocator, code_range_reservation.address(),
         code_range_reservation.size(), MemoryChunk::kAlignment,
-        base::PageInitializationMode::kAllocatedPagesCanBeUninitialized);
+        base::PageInitializationMode::kAllocatedPagesCanBeUninitialized,
+        page_freeing_mode);
+
+    // Modification of pages in code_range_reservation requires write access.
+    RwxMemoryWriteScopeForTesting rwx_write_scope;
 
     VerifyMemoryChunk(isolate, heap, &code_page_allocator, area_size,
                       EXECUTABLE, PageSize::kLarge, heap->code_lo_space());
@@ -269,7 +291,7 @@ TEST(ComputeDiscardMemoryAreas) {
   CHECK_EQ(memory_area.size(), page_size * 2);
 }
 
-TEST(NewSpace) {
+TEST(SemiSpaceNewSpace) {
   if (FLAG_single_generation) return;
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
@@ -277,10 +299,10 @@ TEST(NewSpace) {
   MemoryAllocator* memory_allocator = test_allocator_scope.allocator();
   LinearAllocationArea allocation_info;
 
-  std::unique_ptr<NewSpace> new_space = std::make_unique<NewSpace>(
-      heap, memory_allocator->data_page_allocator(),
-      CcTest::heap()->InitialSemiSpaceSize(),
-      CcTest::heap()->InitialSemiSpaceSize(), &allocation_info);
+  std::unique_ptr<SemiSpaceNewSpace> new_space =
+      std::make_unique<SemiSpaceNewSpace>(
+          heap, CcTest::heap()->InitialSemiSpaceSize(),
+          CcTest::heap()->InitialSemiSpaceSize(), &allocation_info);
   CHECK(new_space->MaximumCapacity());
 
   while (new_space->Available() >= kMaxRegularHeapObjectSize) {
@@ -292,7 +314,6 @@ TEST(NewSpace) {
   new_space.reset();
   memory_allocator->unmapper()->EnsureUnmappingCompleted();
 }
-
 
 TEST(OldSpace) {
   Isolate* isolate = CcTest::i_isolate();
@@ -362,7 +383,7 @@ TEST(OldLargeObjectSpace) {
 // process (jumbo builds).
 TEST(SizeOfInitialHeap) {
   ManualGCScope manual_gc_scope;
-  if (i::FLAG_always_opt) return;
+  if (i::FLAG_always_turbofan) return;
   // Bootstrapping without a snapshot causes more allocations.
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
@@ -417,8 +438,7 @@ static HeapObject AllocateUnaligned(NewSpace* space, int size) {
   CHECK(!allocation.IsFailure());
   HeapObject filler;
   CHECK(allocation.To(&filler));
-  space->heap()->CreateFillerObjectAt(filler.address(), size,
-                                      ClearRecordedSlots::kNo);
+  space->heap()->CreateFillerObjectAt(filler.address(), size);
   return filler;
 }
 
@@ -427,8 +447,7 @@ static HeapObject AllocateUnaligned(PagedSpace* space, int size) {
   CHECK(!allocation.IsFailure());
   HeapObject filler;
   CHECK(allocation.To(&filler));
-  space->heap()->CreateFillerObjectAt(filler.address(), size,
-                                      ClearRecordedSlots::kNo);
+  space->heap()->CreateFillerObjectAt(filler.address(), size);
   return filler;
 }
 
@@ -602,8 +621,7 @@ HEAP_TEST(Regress777177) {
     AllocationResult result =
         old_space->AllocateRaw(filler_size, kTaggedAligned);
     HeapObject obj = result.ToObjectChecked();
-    heap->CreateFillerObjectAt(obj.address(), filler_size,
-                               ClearRecordedSlots::kNo);
+    heap->CreateFillerObjectAt(obj.address(), filler_size);
   }
 
   {
@@ -621,8 +639,7 @@ HEAP_TEST(Regress777177) {
     AllocationResult result =
         old_space->AllocateRaw(filler_size, kTaggedAligned);
     HeapObject obj = result.ToObjectChecked();
-    heap->CreateFillerObjectAt(obj.address(), filler_size,
-                               ClearRecordedSlots::kNo);
+    heap->CreateFillerObjectAt(obj.address(), filler_size);
   }
   old_space->RemoveAllocationObserver(&observer);
 }
@@ -652,8 +669,7 @@ HEAP_TEST(Regress791582) {
     AllocationResult result =
         new_space->AllocateRaw(until_page_end, kTaggedAligned);
     HeapObject obj = result.ToObjectChecked();
-    heap->CreateFillerObjectAt(obj.address(), until_page_end,
-                               ClearRecordedSlots::kNo);
+    heap->CreateFillerObjectAt(obj.address(), until_page_end);
     // Simulate allocation folding moving the top pointer back.
     *new_space->allocation_top_address() = obj.address();
   }
@@ -662,7 +678,7 @@ HEAP_TEST(Regress791582) {
     // This triggers assert in crbug.com/791582
     AllocationResult result = new_space->AllocateRaw(256, kTaggedAligned);
     HeapObject obj = result.ToObjectChecked();
-    heap->CreateFillerObjectAt(obj.address(), 256, ClearRecordedSlots::kNo);
+    heap->CreateFillerObjectAt(obj.address(), 256);
   }
   new_space->RemoveAllocationObserver(&observer);
 }
@@ -794,6 +810,10 @@ class FailingPageAllocator : public v8::PageAllocator {
   }
   bool SetPermissions(void* address, size_t length,
                       Permission permissions) override {
+    return false;
+  }
+  bool RecommitPages(void* address, size_t length,
+                     Permission permissions) override {
     return false;
   }
   bool DecommitPages(void* address, size_t length) override { return false; }

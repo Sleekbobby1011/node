@@ -104,10 +104,8 @@ bool IsUnexpectedCodeObject(Isolate* isolate, HeapObject obj) {
     case Builtin::kAbort:
     case Builtin::kCEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit:
     case Builtin::kInterpreterEntryTrampoline:
-    case Builtin::kRecordWriteEmitRememberedSetSaveFP:
-    case Builtin::kRecordWriteOmitRememberedSetSaveFP:
-    case Builtin::kRecordWriteEmitRememberedSetIgnoreFP:
-    case Builtin::kRecordWriteOmitRememberedSetIgnoreFP:
+    case Builtin::kRecordWriteSaveFP:
+    case Builtin::kRecordWriteIgnoreFP:
 #ifdef V8_IS_TSAN
     case Builtin::kTSANRelaxedStore8IgnoreFP:
     case Builtin::kTSANRelaxedStore8SaveFP:
@@ -171,10 +169,8 @@ void StartupSerializer::SerializeObjectImpl(Handle<HeapObject> obj) {
     accessor_infos_.Push(*info);
   } else if (use_simulator && obj->IsCallHandlerInfo(cage_base)) {
     Handle<CallHandlerInfo> info = Handle<CallHandlerInfo>::cast(obj);
-    Address original_address =
-        Foreign::cast(info->callback()).foreign_address(isolate());
-    Foreign::cast(info->js_callback())
-        .set_foreign_address(isolate(), original_address);
+    Address original_address = info->callback();
+    info->set_js_callback(isolate(), original_address);
     call_handler_infos_.Push(*info);
   } else if (obj->IsScript(cage_base) &&
              Handle<Script>::cast(obj)->IsUserJavaScript()) {

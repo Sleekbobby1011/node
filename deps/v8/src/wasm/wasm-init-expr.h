@@ -42,7 +42,9 @@ class WasmInitExpr : public ZoneObject {
     kStructNewDefault,
     kArrayInit,
     kArrayInitStatic,
+    kI31New,
     kRttCanon,
+    kStringConst,
   };
 
   union Immediate {
@@ -147,6 +149,20 @@ class WasmInitExpr : public ZoneObject {
     return expr;
   }
 
+  static WasmInitExpr I31New(Zone* zone, WasmInitExpr value) {
+    WasmInitExpr expr(kI31New,
+                      zone->New<ZoneVector<WasmInitExpr>>(
+                          std::initializer_list<WasmInitExpr>{value}, zone));
+    return expr;
+  }
+
+  static WasmInitExpr StringConst(uint32_t index) {
+    WasmInitExpr expr;
+    expr.kind_ = kStringConst;
+    expr.immediate_.index = index;
+    return expr;
+  }
+
   Immediate immediate() const { return immediate_; }
   Operator kind() const { return kind_; }
   const ZoneVector<WasmInitExpr>* operands() const { return operands_; }
@@ -159,6 +175,7 @@ class WasmInitExpr : public ZoneObject {
       case kGlobalGet:
       case kRefFuncConst:
       case kRttCanon:
+      case kStringConst:
         return immediate().index == other.immediate().index;
       case kI32Const:
         return immediate().i32_const == other.immediate().i32_const;
@@ -190,6 +207,11 @@ class WasmInitExpr : public ZoneObject {
           if (operands()[i] != other.operands()[i]) return false;
         }
         return true;
+      case kI31New: {
+        int32_t mask = int32_t{0x7fffffff};
+        return (immediate().i32_const & mask) ==
+               (other.immediate().i32_const & mask);
+      }
     }
   }
 

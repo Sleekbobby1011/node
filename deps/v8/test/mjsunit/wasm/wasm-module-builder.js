@@ -68,6 +68,8 @@ let kCodeSectionCode = 10;       // Function code
 let kDataSectionCode = 11;       // Data segments
 let kDataCountSectionCode = 12;  // Data segment count (between Element & Code)
 let kTagSectionCode = 13;        // Tag section (between Memory & Global)
+let kStringRefSectionCode = 14;  // Stringref literals section (between Tag & Global)
+let kLastKnownSectionCode = 14;
 
 // Name section types
 let kModuleNameCode = 0;
@@ -125,7 +127,11 @@ let kWasmExternRef = kWasmAnyRef;  // Alias for test backwards compatibility.
 let kWasmEqRef = -0x13;
 let kWasmI31Ref = -0x16;
 let kWasmDataRef = -0x19;
-let kWasmArrayRef = -0x20;
+let kWasmArrayRef = -0x1a;
+let kWasmStringRef = -0x1b;
+let kWasmStringViewWtf8 = -0x1c;
+let kWasmStringViewWtf16 = -0x1d;
+let kWasmStringViewIter = -0x1e;
 
 // Use the positive-byte versions inside function bodies.
 let kLeb128Mask = 0x7f;
@@ -137,6 +143,10 @@ let kEqRefCode = kWasmEqRef & kLeb128Mask;
 let kI31RefCode = kWasmI31Ref & kLeb128Mask;
 let kDataRefCode = kWasmDataRef & kLeb128Mask;
 let kArrayRefCode = kWasmArrayRef & kLeb128Mask;
+let kStringRefCode = kWasmStringRef & kLeb128Mask;
+let kStringViewWtf8Code = kWasmStringViewWtf8 & kLeb128Mask;
+let kStringViewWtf16Code = kWasmStringViewWtf16 & kLeb128Mask;
+let kStringViewIterCode = kWasmStringViewIter & kLeb128Mask;
 
 let kWasmOptRef = 0x6c;
 let kWasmRef = 0x6b;
@@ -491,6 +501,7 @@ let kExprArrayNew = 0x1b;
 let kExprArrayNewDefault = 0x1c;
 let kExprArrayInitFromData = 0x1e;
 let kExprArrayInitFromDataStatic = 0x1d;
+let kExprArrayInitFromElemStatic = 0x1f;
 let kExprI31New = 0x20;
 let kExprI31GetS = 0x21;
 let kExprI31GetU = 0x22;
@@ -505,6 +516,7 @@ let kExprRefTestStatic = 0x44;
 let kExprRefCastStatic = 0x45;
 let kExprBrOnCastStatic = 0x46;
 let kExprBrOnCastStaticFail = 0x47;
+let kExprRefCastNopStatic = 0x48;
 let kExprRefIsFunc = 0x50;
 let kExprRefIsData = 0x51;
 let kExprRefIsI31 = 0x52;
@@ -521,6 +533,31 @@ let kExprBrOnNonFunc = 0x63;
 let kExprBrOnNonData = 0x64;
 let kExprBrOnNonI31 = 0x65;
 let kExprBrOnNonArray = 0x67;
+let kExprStringNewWtf8 = 0x80;
+let kExprStringNewWtf16 = 0x81;
+let kExprStringConst = 0x82;
+let kExprStringMeasureUtf8 = 0x83;
+let kExprStringMeasureWtf8 = 0x84;
+let kExprStringMeasureWtf16 = 0x85;
+let kExprStringEncodeWtf8 = 0x86;
+let kExprStringEncodeWtf16 = 0x87;
+let kExprStringConcat = 0x88;
+let kExprStringEq = 0x89;
+let kExprStringIsUsvSequence = 0x8a;
+let kExprStringAsWtf8 = 0x90;
+let kExprStringViewWtf8Advance = 0x91;
+let kExprStringViewWtf8Encode = 0x92;
+let kExprStringViewWtf8Slice = 0x93;
+let kExprStringAsWtf16 = 0x98;
+let kExprStringViewWtf16Length = 0x99;
+let kExprStringViewWtf16GetCodeunit = 0x9a;
+let kExprStringViewWtf16Encode = 0x9b;
+let kExprStringViewWtf16Slice = 0x9c;
+let kExprStringAsIter = 0xa0;
+let kExprStringViewIterCur = 0xa1
+let kExprStringViewIterAdvance = 0xa2;
+let kExprStringViewIterRewind = 0xa3
+let kExprStringViewIterSlice = 0xa4;
 
 // Numeric opcodes.
 let kExprI32SConvertSatF32 = 0x00;
@@ -869,9 +906,11 @@ let kTrapTableOutOfBounds = 6;
 let kTrapFuncSigMismatch = 7;
 let kTrapUnalignedAccess = 8;
 let kTrapDataSegmentOutOfBounds = 9;
-let kTrapElemSegmentDropped = 10;
+let kTrapElementSegmentOutOfBounds = 10;
 let kTrapRethrowNull = 11;
 let kTrapArrayTooLarge = 12;
+let kTrapArrayOutOfBounds = 13;
+let kTrapNullDereference = 14;
 
 let kTrapMsgs = [
   'unreachable',                                    // --
@@ -884,9 +923,11 @@ let kTrapMsgs = [
   'null function or function signature mismatch',   // --
   'operation does not support unaligned accesses',  // --
   'data segment out of bounds',                     // --
-  'element segment has been dropped',               // --
+  'element segment out of bounds',                  // --
   'rethrowing null value',                          // --
-  'requested new array is too large'                // --
+  'requested new array is too large',               // --
+  'array element access out of bounds',             // --
+  'dereferencing a null pointer'                    // --
 ];
 
 // This requires test/mjsunit/mjsunit.js.
@@ -1046,7 +1087,6 @@ class Binary {
         this.emit_u32v(expr.value);
         break;
       case kExprArrayInit:
-      case kExprArrayInitStatic:
         for (let operand of expr.operands) {
           this.emit_init_expr_recursive(operand);
         }
@@ -1055,15 +1095,30 @@ class Binary {
         this.emit_u32v(expr.value);
         this.emit_u32v(expr.operands.length - 1);
         break;
+      case kExprArrayInitStatic:
+        for (let operand of expr.operands) {
+          this.emit_init_expr_recursive(operand);
+        }
+        this.emit_u8(kGCPrefix);
+        this.emit_u8(expr.kind);
+        this.emit_u32v(expr.value);
+        this.emit_u32v(expr.operands.length);
+        break;
       case kExprArrayInitFromData:
       case kExprArrayInitFromDataStatic:
+      case kExprArrayInitFromElemStatic:
         for (let operand of expr.operands) {
           this.emit_init_expr_recursive(operand);
         }
         this.emit_u8(kGCPrefix);
         this.emit_u8(expr.kind);
         this.emit_u32v(expr.array_index);
-        this.emit_u32v(expr.data_segment);
+        this.emit_u32v(expr.segment_index);
+        break;
+      case kExprI31New:
+        this.emit_init_expr_recursive(expr.operand);
+        this.emit_u8(kGCPrefix);
+        this.emit_u8(expr.kind);
         break;
       case kExprRttCanon:
         this.emit_u8(kGCPrefix);
@@ -1072,15 +1127,20 @@ class Binary {
         break;
       case kExprRttSub:
         this.emit_init_expr_recursive(expr.parent);
-        this.emit_u8(kGcPrefix);
+        this.emit_u8(kGCPrefix);
         this.emit_u8(kExprRttSub);
         this.emit_u32v(expr.value);
         break;
       case kExprRttFreshSub:
         this.emit_init_expr_recursive(expr.parent);
-        this.emit_u8(kGcPrefix);
+        this.emit_u8(kGCPrefix);
         this.emit_u8(kExprRttFreshSub);
         this.emit_u32v(expr.value);
+        break;
+      case kExprStringConst:
+        this.emit_u8(kGCPrefix);
+        this.emit_u8(kExprStringConst);
+        this.emit_u32v(expr.index);
         break;
     }
   }
@@ -1247,19 +1307,26 @@ class WasmInitExpr {
   static ArrayInitStatic(type, args) {
     return {kind: kExprArrayInitStatic, value: type, operands: args};
   }
-  static ArrayInitFromData(array_index, data_segment, args, builder) {
+  static ArrayInitFromData(array_index, segment_index, args, builder) {
     // array.init_from_data means we need to pull the data count section before
     // any section that may include init. expressions.
     builder.early_data_count_section = true;
     return {kind: kExprArrayInitFromData, array_index: array_index,
-            data_segment: data_segment, operands: args};
+            segment_index: segment_index, operands: args};
   }
-  static ArrayInitFromDataStatic(array_index, data_segment, args, builder) {
+  static ArrayInitFromDataStatic(array_index, segment_index, args, builder) {
     // array.init_from_data means we need to pull the data count section before
     // any section that may include init. expressions.
     builder.early_data_count_section = true;
     return {kind: kExprArrayInitFromDataStatic, array_index: array_index,
-            data_segment: data_segment, operands: args};
+            segment_index: segment_index, operands: args};
+  }
+  static ArrayInitFromElemStatic(array_index, segment_index, args) {
+    return {kind: kExprArrayInitFromElemStatic, array_index: array_index,
+            segment_index: segment_index, operands: args};
+  }
+  static I31New(value) {
+    return {kind: kExprI31New, operand: value};
   }
   static RttCanon(type) {
     return {kind: kExprRttCanon, value: type};
@@ -1269,6 +1336,9 @@ class WasmInitExpr {
   }
   static RttFreshSub(type, parent) {
     return {kind: kExprRttFreshSub, value: type, parent: parent};
+  }
+  static StringConst(index) {
+    return {kind: kExprStringConst, index};
   }
 
   static defaultFor(type) {
@@ -1311,6 +1381,7 @@ class WasmGlobalBuilder {
 
 class WasmTableBuilder {
   constructor(module, type, initial_size, max_size, init_expr) {
+    // TODO(manoskouk): Add the table index.
     this.module = module;
     this.type = type;
     this.initial_size = initial_size;
@@ -1394,6 +1465,7 @@ class WasmModuleBuilder {
     this.types = [];
     this.imports = [];
     this.exports = [];
+    this.stringrefs = [];
     this.globals = [];
     this.tables = [];
     this.tags = [];
@@ -1474,6 +1546,11 @@ class WasmModuleBuilder {
     var pl = type.params.length;   // should have params
     var rl = type.results.length;  // should have results
     return this.types.length - 1;
+  }
+
+  addLiteralStringRef(str) {
+    this.stringrefs.push(str);
+    return this.stringrefs.length - 1;
   }
 
   addStruct(fields, supertype_idx = kNoSuperType) {
@@ -1895,6 +1972,18 @@ class WasmModuleBuilder {
         for (let type_index of wasm.tags) {
           section.emit_u32v(kExceptionAttribute);
           section.emit_u32v(type_index);
+        }
+      });
+    }
+
+    // Add stringref section.
+    if (wasm.stringrefs.length > 0) {
+      if (debug) print('emitting stringrefs @ ' + binary.length);
+      binary.emit_section(kStringRefSectionCode, section => {
+        section.emit_u32v(0);
+        section.emit_u32v(wasm.stringrefs.length);
+        for (let str of wasm.stringrefs) {
+          section.emit_string(str);
         }
       });
     }

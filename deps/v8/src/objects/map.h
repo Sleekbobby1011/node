@@ -35,6 +35,7 @@ enum InstanceType : uint16_t;
 #define POINTER_VISITOR_ID_LIST(V)      \
   V(AllocationSite)                     \
   V(BytecodeArray)                      \
+  V(CallHandlerInfo)                    \
   V(Cell)                               \
   V(Code)                               \
   V(CodeDataContainer)                  \
@@ -300,17 +301,17 @@ class Map : public TorqueGeneratedMap<Map, HeapObject> {
   };
 
   // Ensure that Torque-defined bit widths for |bit_field3| are as expected.
-  STATIC_ASSERT(Bits3::EnumLengthBits::kSize == kDescriptorIndexBitCount);
-  STATIC_ASSERT(Bits3::NumberOfOwnDescriptorsBits::kSize ==
+  static_assert(Bits3::EnumLengthBits::kSize == kDescriptorIndexBitCount);
+  static_assert(Bits3::NumberOfOwnDescriptorsBits::kSize ==
                 kDescriptorIndexBitCount);
 
-  STATIC_ASSERT(Bits3::NumberOfOwnDescriptorsBits::kMax >=
+  static_assert(Bits3::NumberOfOwnDescriptorsBits::kMax >=
                 kMaxNumberOfDescriptors);
 
   static const int kSlackTrackingCounterStart = 7;
   static const int kSlackTrackingCounterEnd = 1;
   static const int kNoSlackTracking = 0;
-  STATIC_ASSERT(kSlackTrackingCounterStart <=
+  static_assert(kSlackTrackingCounterStart <=
                 Bits3::ConstructionCounterBits::kMax);
 
   // Inobject slack tracking is the way to reclaim unused inobject space.
@@ -816,7 +817,7 @@ class Map : public TorqueGeneratedMap<Map, HeapObject> {
 
   static const int kMaxPreAllocatedPropertyFields = 255;
 
-  STATIC_ASSERT(kInstanceTypeOffset == Internals::kMapInstanceTypeOffset);
+  static_assert(kInstanceTypeOffset == Internals::kMapInstanceTypeOffset);
 
   class BodyDescriptor;
 

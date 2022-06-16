@@ -76,6 +76,7 @@ class WeakCell;
 namespace wasm {
 class ArrayType;
 class StructType;
+struct WasmElemSegment;
 class WasmValue;
 }  // namespace wasm
 #endif
@@ -256,6 +257,15 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       const base::Vector<const char>& str,
       AllocationType allocation = AllocationType::kYoung);
 
+#if V8_ENABLE_WEBASSEMBLY
+  // The WTF-8 encoding is just like UTF-8 except that it can also represent
+  // isolated surrogate codepoints.  It can represent all strings that
+  // JavaScript's strings can.
+  V8_WARN_UNUSED_RESULT MaybeHandle<String> NewStringFromWtf8(
+      const base::Vector<const uint8_t>& str,
+      AllocationType allocation = AllocationType::kYoung);
+#endif  // V8_ENABLE_WEBASSEMBLY
+
   V8_WARN_UNUSED_RESULT MaybeHandle<String> NewStringFromUtf8SubString(
       Handle<SeqOneByteString> str, int begin, int end,
       AllocationType allocation = AllocationType::kYoung);
@@ -267,6 +277,14 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   V8_WARN_UNUSED_RESULT MaybeHandle<String> NewStringFromTwoByte(
       const ZoneVector<base::uc16>* str,
       AllocationType allocation = AllocationType::kYoung);
+
+#if V8_ENABLE_WEBASSEMBLY
+  // Usually the two-byte encodings are in the native endianness, but for
+  // WebAssembly linear memory, they are explicitly little-endian.
+  V8_WARN_UNUSED_RESULT MaybeHandle<String> NewStringFromTwoByteLittleEndian(
+      const base::Vector<const base::uc16>& str,
+      AllocationType allocation = AllocationType::kYoung);
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   Handle<JSStringIterator> NewJSStringIterator(Handle<String> string);
 
@@ -310,7 +328,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   // A cache is used for Latin1 codes.
   Handle<String> LookupSingleCharacterStringFromCode(uint16_t code);
 
-  // Create or lookup a single characters tring made up of a utf16 surrogate
+  // Create or lookup a single character string made up of a utf16 surrogate
   // pair.
   Handle<String> NewSurrogatePairString(uint16_t lead, uint16_t trail);
 
@@ -524,7 +542,10 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   // points to the site.
   // JS objects are pretenured when allocated by the bootstrapper and
   // runtime.
-  Handle<JSObject> NewJSObjectFromMap(
+  inline Handle<JSObject> NewJSObjectFromMap(
+      Handle<Map> map, AllocationType allocation = AllocationType::kYoung,
+      Handle<AllocationSite> allocation_site = Handle<AllocationSite>::null());
+  inline Handle<JSObject> NewSystemPointerAlignedJSObjectFromMap(
       Handle<Map> map, AllocationType allocation = AllocationType::kYoung,
       Handle<AllocationSite> allocation_site = Handle<AllocationSite>::null());
   // Like NewJSObjectFromMap, but includes allocating a properties dictionary.
@@ -626,6 +647,11 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       Handle<Map> map);
   Handle<WasmArray> NewWasmArrayFromMemory(uint32_t length, Handle<Map> map,
                                            Address source);
+  // Returns a handle to a WasmArray if successful, or a Smi containing a
+  // {MessageTemplate} if computing the array's elements leads to an error.
+  Handle<Object> NewWasmArrayFromElementSegment(
+      Handle<WasmInstanceObject> instance, const wasm::WasmElemSegment* segment,
+      uint32_t start_offset, uint32_t length, Handle<Map> map);
 
   Handle<SharedFunctionInfo> NewSharedFunctionInfoForWasmExportedFunction(
       Handle<String> name, Handle<WasmExportedFunctionData> data);
@@ -916,6 +942,12 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       return *this;
     }
 
+    CodeBuilder& set_osr_offset(BytecodeOffset offset) {
+      DCHECK_IMPLIES(!offset.IsNone(), CodeKindCanOSR(kind_));
+      osr_offset_ = offset;
+      return *this;
+    }
+
     CodeBuilder& set_source_position_table(Handle<ByteArray> table) {
       DCHECK_NE(kind_, CodeKind::BASELINE);
       DCHECK(!table.is_null());
@@ -993,6 +1025,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     MaybeHandle<Object> self_reference_;
     Builtin builtin_ = Builtin::kNoBuiltinId;
     uint32_t inlined_bytecode_size_ = 0;
+    BytecodeOffset osr_offset_ = BytecodeOffset::None();
     int32_t kind_specific_flags_ = 0;
     // Either source_position_table for non-baseline code
     // or bytecode_offset_table for baseline code.
@@ -1009,6 +1042,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
  private:
   friend class FactoryBase<Factory>;
+  friend class WebSnapshotDeserializer;
 
   // ------
   // Customization points for FactoryBase
@@ -1044,7 +1078,12 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   HeapObject AllocateRawWithAllocationSite(
       Handle<Map> map, AllocationType allocation,
-      Handle<AllocationSite> allocation_site);
+      Handle<AllocationSite> allocation_site,
+      AllocationAlignment alignment = kTaggedAligned);
+
+  Handle<JSObject> NewJSObjectFromMapInternal(
+      Handle<Map> map, AllocationType allocation,
+      Handle<AllocationSite> allocation_site, AllocationAlignment alignment);
 
   Handle<JSArrayBufferView> NewJSArrayBufferView(
       Handle<Map> map, Handle<FixedArrayBase> elements,

@@ -123,7 +123,9 @@
 #include "src/strings/string-stream.h"
 #include "src/strings/unicode-decoder.h"
 #include "src/strings/unicode-inl.h"
+#include "src/utils/hex-format.h"
 #include "src/utils/ostreams.h"
+#include "src/utils/sha-256.h"
 #include "src/utils/utils-inl.h"
 #include "src/zone/zone.h"
 
@@ -141,9 +143,8 @@ ShouldThrow GetShouldThrow(Isolate* isolate, Maybe<ShouldThrow> should_throw) {
   if (mode == LanguageMode::kStrict) return kThrowOnError;
 
   for (StackFrameIterator it(isolate); !it.done(); it.Advance()) {
-    if (!(it.frame()->is_optimized() || it.frame()->is_unoptimized())) {
-      continue;
-    }
+    if (!it.frame()->is_java_script()) continue;
+
     // Get the language mode from closure.
     JavaScriptFrame* js_frame = static_cast<JavaScriptFrame*>(it.frame());
     std::vector<SharedFunctionInfo> functions;
@@ -177,6 +178,11 @@ bool ComparisonResultToBool(Operation op, ComparisonResult result) {
 }
 
 std::ostream& operator<<(std::ostream& os, InstanceType instance_type) {
+  if (InstanceTypeChecker::IsJSApiObject(instance_type)) {
+    return os << "[api object] "
+              << static_cast<int16_t>(instance_type) -
+                     i::Internals::kFirstJSApiObjectType;
+  }
   switch (instance_type) {
 #define WRITE_TYPE(TYPE) \
   case TYPE:             \
@@ -1033,12 +1039,12 @@ MaybeHandle<FixedArray> CreateListFromArrayLikeFastPath(
           isolate, array, length);
     } else if (object->IsJSTypedArray()) {
       Handle<JSTypedArray> array = Handle<JSTypedArray>::cast(object);
-      size_t length = array->length();
-      if (array->WasDetached() ||
+      size_t length = array->GetLength();
+      if (array->IsDetachedOrOutOfBounds() ||
           length > static_cast<size_t>(FixedArray::kMaxLength)) {
         return MaybeHandle<FixedArray>();
       }
-      STATIC_ASSERT(FixedArray::kMaxLength <=
+      static_assert(FixedArray::kMaxLength <=
                     std::numeric_limits<uint32_t>::max());
       return array->GetElementsAccessor()->CreateListFromArrayLike(
           isolate, array, static_cast<uint32_t>(length));
@@ -1328,7 +1334,7 @@ Handle<TemplateList> TemplateList::New(Isolate* isolate, int size) {
 Handle<TemplateList> TemplateList::Add(Isolate* isolate,
                                        Handle<TemplateList> list,
                                        Handle<i::Object> value) {
-  STATIC_ASSERT(kFirstElementIndex == 1);
+  static_assert(kFirstElementIndex == 1);
   int index = list->length() + 1;
   Handle<i::FixedArray> fixed_array = Handle<FixedArray>::cast(list);
   fixed_array = FixedArray::SetAndGrow(isolate, fixed_array, index, value);
@@ -1417,12 +1423,6 @@ MaybeHandle<Object> Object::GetPropertyWithAccessor(LookupIterator* it) {
   if (structure->IsAccessorInfo()) {
     Handle<Name> name = it->GetName();
     Handle<AccessorInfo> info = Handle<AccessorInfo>::cast(structure);
-    if (!info->IsCompatibleReceiver(*receiver)) {
-      THROW_NEW_ERROR(isolate,
-                      NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
-                                   name, receiver),
-                      Object);
-    }
 
     if (!info->has_getter()) return isolate->factory()->undefined_value();
 
@@ -1485,18 +1485,10 @@ Address AccessorInfo::redirected_getter() const {
 }
 
 Address CallHandlerInfo::redirected_callback() const {
-  Address address = v8::ToCData<Address>(callback());
+  Address address = callback();
   ApiFunction fun(address);
   ExternalReference::Type type = ExternalReference::DIRECT_API_CALL;
   return ExternalReference::Create(&fun, type).address();
-}
-
-bool AccessorInfo::IsCompatibleReceiverMap(Handle<AccessorInfo> info,
-                                           Handle<Map> map) {
-  if (!info->HasExpectedReceiverType()) return true;
-  if (!map->IsJSObjectMap()) return false;
-  return FunctionTemplateInfo::cast(info->expected_receiver_type())
-      .IsTemplateFor(*map);
 }
 
 Maybe<bool> Object::SetPropertyWithAccessor(
@@ -1520,11 +1512,6 @@ Maybe<bool> Object::SetPropertyWithAccessor(
   if (structure->IsAccessorInfo()) {
     Handle<Name> name = it->GetName();
     Handle<AccessorInfo> info = Handle<AccessorInfo>::cast(structure);
-    if (!info->IsCompatibleReceiver(*receiver)) {
-      isolate->Throw(*isolate->factory()->NewTypeError(
-          MessageTemplate::kIncompatibleMethodReceiver, name, receiver));
-      return Nothing<bool>();
-    }
 
     if (!info->has_setter()) {
       // TODO(verwaest): We should not get here anymore once all AccessorInfos
@@ -1864,12 +1851,16 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {
     case MAP_TYPE: {
       os << "<Map";
       Map mapInstance = Map::cast(*this);
-      if (mapInstance.IsJSObjectMap()) {
-        os << "(" << ElementsKindToString(mapInstance.elements_kind()) << ")";
-      } else if (mapInstance.instance_size() != kVariableSizeSentinel) {
+      if (mapInstance.instance_size() != kVariableSizeSentinel) {
         os << "[" << mapInstance.instance_size() << "]";
       }
-      os << ">";
+      os << "(";
+      if (mapInstance.IsJSObjectMap()) {
+        os << ElementsKindToString(mapInstance.elements_kind());
+      } else {
+        os << mapInstance.instance_type();
+      }
+      os << ")>";
     } break;
     case AWAIT_CONTEXT_TYPE: {
       os << "<AwaitContext generator= ";
@@ -2128,8 +2119,8 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {
     case CALL_HANDLER_INFO_TYPE: {
       CallHandlerInfo info = CallHandlerInfo::cast(*this);
       os << "<CallHandlerInfo ";
-      os << "callback= " << Brief(info.callback());
-      os << ", js_callback= " << Brief(info.js_callback());
+      os << "callback= " << reinterpret_cast<void*>(info.callback());
+      os << ", js_callback= " << reinterpret_cast<void*>(info.js_callback());
       os << ", data= " << Brief(info.data());
       if (info.IsSideEffectFreeCallHandlerInfo()) {
         os << ", side_effect_free= true>";
@@ -2151,7 +2142,7 @@ void Tuple2::BriefPrintDetails(std::ostream& os) {
 }
 
 void MegaDomHandler::BriefPrintDetails(std::ostream& os) {
-  os << " " << Brief(accessor()) << ", " << Brief(context());
+  os << " " << Brief(accessor(kAcquireLoad)) << ", " << Brief(context());
 }
 
 void ClassPositions::BriefPrintDetails(std::ostream& os) {
@@ -2297,11 +2288,15 @@ int HeapObject::SizeFromMap(Map map) const {
         CoverageInfo::unchecked_cast(*this).slot_count());
   }
 #if V8_ENABLE_WEBASSEMBLY
+  if (instance_type == WASM_TYPE_INFO_TYPE) {
+    return WasmTypeInfo::SizeFor(
+        WasmTypeInfo::unchecked_cast(*this).supertypes_length());
+  }
   if (instance_type == WASM_STRUCT_TYPE) {
     return WasmStruct::GcSafeSize(map);
   }
   if (instance_type == WASM_ARRAY_TYPE) {
-    return WasmArray::SizeFor(map, WasmArray::cast(*this).length());
+    return WasmArray::SizeFor(map, WasmArray::unchecked_cast(*this).length());
   }
 #endif  // V8_ENABLE_WEBASSEMBLY
   DCHECK_EQ(instance_type, EMBEDDER_DATA_ARRAY_TYPE);
@@ -4516,7 +4511,7 @@ void DescriptorArray::Sort() {
 
 int16_t DescriptorArray::UpdateNumberOfMarkedDescriptors(
     unsigned mark_compact_epoch, int16_t new_marked) {
-  STATIC_ASSERT(kMaxNumberOfDescriptors <=
+  static_assert(kMaxNumberOfDescriptors <=
                 NumberOfMarkedDescriptors::kMaxNumberOfMarkedDescriptors);
   int16_t old_raw_marked = raw_number_of_marked_descriptors();
   int16_t old_marked =
@@ -5040,6 +5035,50 @@ Object Script::GetNameOrSourceURL() {
   // Keep in sync with ScriptNameOrSourceURL in messages.js.
   if (!source_url().IsUndefined()) return source_url();
   return name();
+}
+
+// static
+Handle<String> Script::GetScriptHash(Isolate* isolate, Handle<Script> script,
+                                     bool forceForInspector) {
+  if (script->origin_options().IsOpaque() && !forceForInspector) {
+    return isolate->factory()->empty_string();
+  }
+
+  PtrComprCageBase cage_base(isolate);
+  {
+    Object maybe_source_hash = script->source_hash(cage_base);
+    if (maybe_source_hash.IsString(cage_base)) {
+      Handle<String> precomputed(String::cast(maybe_source_hash), isolate);
+      if (precomputed->length() > 0) {
+        return precomputed;
+      }
+    }
+  }
+
+  Handle<String> src_text;
+  {
+    Object maybe_script_source = script->source(cage_base);
+
+    if (!maybe_script_source.IsString(cage_base)) {
+      return isolate->factory()->empty_string();
+    }
+    src_text = handle(String::cast(maybe_script_source), isolate);
+  }
+
+  char formatted_hash[kSizeOfFormattedSha256Digest];
+
+  std::unique_ptr<char[]> string_val = src_text->ToCString();
+  size_t len = strlen(string_val.get());
+  uint8_t hash[kSizeOfSha256Digest];
+  SHA256_hash(string_val.get(), len, hash);
+  FormatBytesToHex(formatted_hash, kSizeOfFormattedSha256Digest, hash,
+                   kSizeOfSha256Digest);
+  formatted_hash[kSizeOfSha256Digest * 2] = '\0';
+
+  Handle<String> result =
+      isolate->factory()->NewStringFromAsciiChecked(formatted_hash);
+  script->set_source_hash(*result);
+  return result;
 }
 
 template <typename IsolateT>
@@ -5622,7 +5661,7 @@ Handle<Object> JSPromise::TriggerPromiseReactions(Isolate* isolate,
     }
     if (!has_handler_context) handler_context = isolate->native_context();
 
-    STATIC_ASSERT(
+    static_assert(
         static_cast<int>(PromiseReaction::kSize) ==
         static_cast<int>(
             PromiseReactionJobTask::kSizeOfAllPromiseReactionJobTasks));
@@ -5634,14 +5673,14 @@ Handle<Object> JSPromise::TriggerPromiseReactions(Isolate* isolate,
           *argument);
       Handle<PromiseFulfillReactionJobTask>::cast(task)->set_context(
           *handler_context);
-      STATIC_ASSERT(
+      static_assert(
           static_cast<int>(PromiseReaction::kFulfillHandlerOffset) ==
           static_cast<int>(PromiseFulfillReactionJobTask::kHandlerOffset));
-      STATIC_ASSERT(
+      static_assert(
           static_cast<int>(PromiseReaction::kPromiseOrCapabilityOffset) ==
           static_cast<int>(
               PromiseFulfillReactionJobTask::kPromiseOrCapabilityOffset));
-      STATIC_ASSERT(
+      static_assert(
           static_cast<int>(
               PromiseReaction::kContinuationPreservedEmbedderDataOffset) ==
           static_cast<int>(PromiseFulfillReactionJobTask::
@@ -5656,11 +5695,11 @@ Handle<Object> JSPromise::TriggerPromiseReactions(Isolate* isolate,
           *handler_context);
       Handle<PromiseRejectReactionJobTask>::cast(task)->set_handler(
           *primary_handler);
-      STATIC_ASSERT(
+      static_assert(
           static_cast<int>(PromiseReaction::kPromiseOrCapabilityOffset) ==
           static_cast<int>(
               PromiseRejectReactionJobTask::kPromiseOrCapabilityOffset));
-      STATIC_ASSERT(
+      static_assert(
           static_cast<int>(
               PromiseReaction::kContinuationPreservedEmbedderDataOffset) ==
           static_cast<int>(PromiseRejectReactionJobTask::
@@ -6213,7 +6252,7 @@ int Dictionary<Derived, Shape>::NumberOfEnumerableProperties() {
     if (k.FilterKey(ENUMERABLE_STRINGS)) continue;
     PropertyDetails details = this->DetailsAt(i);
     PropertyAttributes attr = details.attributes();
-    if ((attr & ONLY_ENUMERABLE) == 0) result++;
+    if ((int{attr} & ONLY_ENUMERABLE) == 0) result++;
   }
   return result;
 }
@@ -6732,21 +6771,25 @@ bool PropertyCell::CanTransitionTo(PropertyDetails new_details,
 }
 #endif  // DEBUG
 
+int JSGeneratorObject::code_offset() const {
+  DCHECK(input_or_debug_pos().IsSmi());
+  int code_offset = Smi::ToInt(input_or_debug_pos());
+
+  // The stored bytecode offset is relative to a different base than what
+  // is used in the source position table, hence the subtraction.
+  code_offset -= BytecodeArray::kHeaderSize - kHeapObjectTag;
+  return code_offset;
+}
+
 int JSGeneratorObject::source_position() const {
   CHECK(is_suspended());
   DCHECK(function().shared().HasBytecodeArray());
   Isolate* isolate = GetIsolate();
   DCHECK(
       function().shared().GetBytecodeArray(isolate).HasSourcePositionTable());
-
-  int code_offset = Smi::ToInt(input_or_debug_pos());
-
-  // The stored bytecode offset is relative to a different base than what
-  // is used in the source position table, hence the subtraction.
-  code_offset -= BytecodeArray::kHeaderSize - kHeapObjectTag;
   AbstractCode code =
       AbstractCode::cast(function().shared().GetBytecodeArray(isolate));
-  return code.SourcePosition(code_offset);
+  return code.SourcePosition(code_offset());
 }
 
 // static
@@ -6981,7 +7024,7 @@ void JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap(
   }
 
   // weak_cell is now removed from the unregister token map, so clear its
-  // unregister token-related fields for heap verification.
+  // unregister token-related fields.
   weak_cell.set_unregister_token(undefined);
   weak_cell.set_key_list_prev(undefined);
   weak_cell.set_key_list_next(undefined);

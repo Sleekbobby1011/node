@@ -20,6 +20,7 @@
 namespace v8 {
 
 class Function;
+class Message;
 class Object;
 class PrimitiveArray;
 class Script;
@@ -78,7 +79,13 @@ class V8_EXPORT UnboundScript {
    * Returns zero based line number of the code_pos location in the script.
    * -1 will be returned if no information available.
    */
-  int GetLineNumber(int code_pos);
+  int GetLineNumber(int code_pos = 0);
+
+  /**
+   * Returns zero based column number of the code_pos location in the script.
+   * -1 will be returned if no information available.
+   */
+  int GetColumnNumber(int code_pos = 0);
 
   static const int kNoScriptId = 0;
 };
@@ -285,6 +292,16 @@ class V8_EXPORT Module : public Data {
    */
   V8_WARN_UNUSED_RESULT Maybe<bool> SetSyntheticModuleExport(
       Isolate* isolate, Local<String> export_name, Local<Value> export_value);
+
+  /**
+   * Search the modules requested directly or indirectly by the module for
+   * any top-level await that has not yet resolved. If there is any, the
+   * returned vector contains a tuple of the unresolved module and a message
+   * with the pending top-level await.
+   * An embedder may call this before exiting to improve error messages.
+   */
+  std::vector<std::tuple<Local<Module>, Local<Message>>>
+  GetStalledTopLevelAwaitMessage(Isolate* isolate);
 
   V8_INLINE static Module* Cast(Data* data);
 
@@ -581,7 +598,8 @@ class V8_EXPORT ScriptCompiler {
    */
   static ScriptStreamingTask* StartStreaming(
       Isolate* isolate, StreamedSource* source,
-      ScriptType type = ScriptType::kClassic);
+      ScriptType type = ScriptType::kClassic,
+      CompileOptions options = kNoCompileOptions);
 
   static ConsumeCodeCacheTask* StartConsumingCodeCache(
       Isolate* isolate, std::unique_ptr<CachedData> source);
@@ -650,6 +668,7 @@ class V8_EXPORT ScriptCompiler {
    * It is possible to specify multiple context extensions (obj in the above
    * example).
    */
+  V8_DEPRECATED("Use CompileFunction")
   static V8_WARN_UNUSED_RESULT MaybeLocal<Function> CompileFunctionInContext(
       Local<Context> context, Source* source, size_t arguments_count,
       Local<String> arguments[], size_t context_extension_count,

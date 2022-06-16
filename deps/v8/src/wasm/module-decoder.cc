@@ -14,9 +14,10 @@
 #include "src/objects/objects-inl.h"
 #include "src/utils/ostreams.h"
 #include "src/wasm/canonical-types.h"
+#include "src/wasm/constant-expression-interface.h"
+#include "src/wasm/constant-expression.h"
 #include "src/wasm/decoder.h"
 #include "src/wasm/function-body-decoder-impl.h"
-#include "src/wasm/init-expr-interface.h"
 #include "src/wasm/struct-types.h"
 #include "src/wasm/wasm-constants.h"
 #include "src/wasm/wasm-engine.h"
@@ -87,6 +88,8 @@ const char* SectionName(SectionCode code) {
       return "Data";
     case kTagSectionCode:
       return "Tag";
+    case kStringRefSectionCode:
+      return "StringRef";
     case kDataCountSectionCode:
       return "DataCount";
     case kNameSectionCode:
@@ -114,9 +117,11 @@ bool validate_utf8(Decoder* decoder, WireBytesRef string) {
       string.length());
 }
 
+enum class StringValidation { kNone, kUtf8, kWtf8 };
+
 // Reads a length-prefixed string, checking that it is within bounds. Returns
 // the offset of the string, and the length as an out parameter.
-WireBytesRef consume_string(Decoder* decoder, bool validate_utf8,
+WireBytesRef consume_string(Decoder* decoder, StringValidation validation,
                             const char* name) {
   uint32_t length = decoder->consume_u32v("string length");
   uint32_t offset = decoder->pc_offset();
@@ -124,17 +129,33 @@ WireBytesRef consume_string(Decoder* decoder, bool validate_utf8,
   // Consume bytes before validation to guarantee that the string is not oob.
   if (length > 0) {
     decoder->consume_bytes(length, name);
-    if (decoder->ok() && validate_utf8 &&
-        !unibrow::Utf8::ValidateEncoding(string_start, length)) {
-      decoder->errorf(string_start, "%s: no valid UTF-8 string", name);
+    if (decoder->ok()) {
+      switch (validation) {
+        case StringValidation::kNone:
+          break;
+        case StringValidation::kUtf8:
+          if (!unibrow::Utf8::ValidateEncoding(string_start, length)) {
+            decoder->errorf(string_start, "%s: no valid UTF-8 string", name);
+          }
+          break;
+        case StringValidation::kWtf8:
+          if (!unibrow::Wtf8::ValidateEncoding(string_start, length)) {
+            decoder->errorf(string_start, "%s: no valid WTF-8 string", name);
+          }
+          break;
+      }
     }
   }
   return {offset, decoder->failed() ? 0 : length};
 }
 
+WireBytesRef consume_utf8_string(Decoder* decoder, const char* name) {
+  return consume_string(decoder, StringValidation::kUtf8, name);
+}
+
 namespace {
 SectionCode IdentifyUnknownSectionInternal(Decoder* decoder) {
-  WireBytesRef string = consume_string(decoder, true, "section name");
+  WireBytesRef string = consume_utf8_string(decoder, "section name");
   if (decoder->failed()) {
     return kUnknownSectionCode;
   }
@@ -263,7 +284,6 @@ class WasmSectionIterator {
     } else if (!IsValidSectionCode(section_code)) {
       decoder_->errorf(decoder_->pc(), "unknown section code #0x%02x",
                        section_code);
-      section_code = kUnknownSectionCode;
     }
     section_code_ = decoder_->failed() ? kUnknownSectionCode
                                        : static_cast<SectionCode>(section_code);
@@ -418,13 +438,24 @@ class ModuleDecoderImpl : public Decoder {
           return;
         }
         break;
-      case kTagSectionCode:
+      case kTagSectionCode: {
         if (!CheckUnorderedSection(section_code)) return;
         if (!CheckSectionOrder(section_code, kMemorySectionCode,
                                kGlobalSectionCode)) {
           return;
         }
         break;
+      }
+      case kStringRefSectionCode: {
+        // TODO(12868): If there's a tag section, assert that we're after the
+        // tag section.
+        if (!CheckUnorderedSection(section_code)) return;
+        if (!CheckSectionOrder(section_code, kMemorySectionCode,
+                               kGlobalSectionCode)) {
+          return;
+        }
+        break;
+      }
       case kNameSectionCode:
         // TODO(titzer): report out of place name section as a warning.
         // Be lenient with placement of name section. All except first
@@ -538,6 +569,16 @@ class ModuleDecoderImpl : public Decoder {
         } else {
           errorf(pc(),
                  "unexpected section <%s> (enable with --experimental-wasm-eh)",
+                 SectionName(section_code));
+        }
+        break;
+      case kStringRefSectionCode:
+        if (enabled_features_.has_stringref()) {
+          DecodeStringRefSection();
+        } else {
+          errorf(pc(),
+                 "unexpected section <%s> (enable with "
+                 "--experimental-wasm-stringref)",
                  SectionName(section_code));
         }
         break;
@@ -679,12 +720,33 @@ class ModuleDecoderImpl : public Decoder {
       for (uint32_t i = 0; i < types_count; ++i) {
         TRACE("DecodeSignature[%d] module+%d\n", i,
               static_cast<int>(pc_ - start_));
-        expect_u8("signature definition", kWasmFunctionTypeCode);
-        const FunctionSig* sig = consume_sig(module_->signature_zone.get());
-        if (!ok()) break;
-        module_->add_signature(sig, kNoSuperType);
-        if (FLAG_wasm_type_canonicalization) {
-          type_canon->AddRecursiveGroup(module_.get(), 1);
+        uint8_t opcode = read_u8<kFullValidation>(pc(), "signature definition");
+        switch (opcode) {
+          case kWasmFunctionTypeCode: {
+            consume_bytes(1);
+            const FunctionSig* sig = consume_sig(module_->signature_zone.get());
+            if (!ok()) break;
+            module_->add_signature(sig, kNoSuperType);
+            if (FLAG_wasm_type_canonicalization) {
+              type_canon->AddRecursiveGroup(module_.get(), 1);
+            }
+            break;
+          }
+          case kWasmArrayTypeCode:
+          case kWasmStructTypeCode:
+          case kWasmSubtypeCode:
+          case kWasmRecursiveTypeGroupCode:
+          case kWasmFunctionNominalCode:
+          case kWasmStructNominalCode:
+          case kWasmArrayNominalCode:
+            errorf(
+                "Unknown type code 0x%02x, enable with --experimental-wasm-gc",
+                opcode);
+            return;
+          default:
+            errorf("Expected signature definition 0x%02x, got 0x%02x",
+                   kWasmFunctionTypeCode, opcode);
+            return;
         }
       }
       return;
@@ -788,8 +850,8 @@ class ModuleDecoderImpl : public Decoder {
       });
       WasmImport* import = &module_->import_table.back();
       const byte* pos = pc_;
-      import->module_name = consume_string(this, true, "module name");
-      import->field_name = consume_string(this, true, "field name");
+      import->module_name = consume_utf8_string(this, "module name");
+      import->field_name = consume_utf8_string(this, "field name");
       import->kind =
           static_cast<ImportExportKindCode>(consume_u8("import kind"));
       switch (import->kind) {
@@ -975,7 +1037,7 @@ class ModuleDecoderImpl : public Decoder {
       });
       WasmExport* exp = &module_->export_table.back();
 
-      exp->name = consume_string(this, true, "field name");
+      exp->name = consume_utf8_string(this, "field name");
 
       const byte* pos = pc();
       exp->kind = static_cast<ImportExportKindCode>(consume_u8("export kind"));
@@ -1226,7 +1288,8 @@ class ModuleDecoderImpl : public Decoder {
         // Decode module name, ignore the rest.
         // Function and local names will be decoded when needed.
         if (name_type == NameSectionKindCode::kModuleCode) {
-          WireBytesRef name = consume_string(&inner, false, "module name");
+          WireBytesRef name =
+              consume_string(&inner, StringValidation::kNone, "module name");
           if (inner.ok() && validate_utf8(&inner, name)) {
             module_->name = name;
           }
@@ -1241,7 +1304,7 @@ class ModuleDecoderImpl : public Decoder {
 
   void DecodeSourceMappingURLSection() {
     Decoder inner(start_, pc_, end_, buffer_offset_);
-    WireBytesRef url = wasm::consume_string(&inner, true, "module name");
+    WireBytesRef url = wasm::consume_utf8_string(&inner, "module name");
     if (inner.ok() &&
         module_->debug_symbols.type != WasmDebugSymbols::Type::SourceMap) {
       module_->debug_symbols = {WasmDebugSymbols::Type::SourceMap, url};
@@ -1253,7 +1316,7 @@ class ModuleDecoderImpl : public Decoder {
   void DecodeExternalDebugInfoSection() {
     Decoder inner(start_, pc_, end_, buffer_offset_);
     WireBytesRef url =
-        wasm::consume_string(&inner, true, "external symbol file");
+        wasm::consume_utf8_string(&inner, "external symbol file");
     // If there is an explicit source map, prefer it over DWARF info.
     if (inner.ok() &&
         module_->debug_symbols.type != WasmDebugSymbols::Type::SourceMap) {
@@ -1448,6 +1511,24 @@ class ModuleDecoderImpl : public Decoder {
       consume_exception_attribute();  // Attribute ignored for now.
       consume_tag_sig_index(module_.get(), &tag_sig);
       module_->tags.emplace_back(tag_sig);
+    }
+  }
+
+  void DecodeStringRefSection() {
+    uint32_t deferred = consume_count("deferred string literal count",
+                                      kV8MaxWasmStringLiterals);
+    if (deferred) {
+      errorf(pc(), "Invalid deferred string literal count %u (expected 0)",
+             deferred);
+    }
+    uint32_t immediate = consume_count("string literal count",
+                                       kV8MaxWasmStringLiterals - deferred);
+    for (uint32_t i = 0; ok() && i < immediate; ++i) {
+      TRACE("DecodeStringLiteral[%d] module+%d\n", i,
+            static_cast<int>(pc_ - start_));
+      WireBytesRef pos =
+          wasm::consume_string(this, StringValidation::kWtf8, "string literal");
+      module_->stringref_literals.emplace_back(pos);
     }
   }
 
@@ -1756,7 +1837,7 @@ class ModuleDecoderImpl : public Decoder {
 
   uint8_t validate_table_flags(const char* name) {
     uint8_t flags = consume_u8("table limits flags");
-    STATIC_ASSERT(kNoMaximum < kWithMaximum);
+    static_assert(kNoMaximum < kWithMaximum);
     if (V8_UNLIKELY(flags > kWithMaximum)) {
       errorf(pc() - 1, "invalid %s limits flags", name);
     }
@@ -1929,8 +2010,8 @@ class ModuleDecoderImpl : public Decoder {
     auto sig = FixedSizeSignature<ValueType>::Returns(expected);
     FunctionBody body(&sig, buffer_offset_, pc_, end_);
     WasmFeatures detected;
-    WasmFullDecoder<Decoder::kFullValidation, InitExprInterface,
-                    kInitExpression>
+    WasmFullDecoder<Decoder::kFullValidation, ConstantExpressionInterface,
+                    kConstantExpression>
         decoder(&init_expr_zone_, module, enabled_features_, &detected, body,
                 module);
 
@@ -2501,7 +2582,8 @@ void DecodeFunctionNames(const byte* module_start, const byte* module_end,
 
       for (; decoder.ok() && functions_count > 0; --functions_count) {
         uint32_t function_index = decoder.consume_u32v("function index");
-        WireBytesRef name = consume_string(&decoder, false, "function name");
+        WireBytesRef name =
+            consume_string(&decoder, StringValidation::kNone, "function name");
 
         // Be lenient with errors in the name section: Ignore non-UTF8 names.
         // You can even assign to the same function multiple times (last valid
@@ -2535,7 +2617,8 @@ NameMap DecodeNameMap(base::Vector<const uint8_t> module_bytes,
     uint32_t count = decoder.consume_u32v("names count");
     for (uint32_t i = 0; i < count; i++) {
       uint32_t index = decoder.consume_u32v("index");
-      WireBytesRef name = consume_string(&decoder, false, "name");
+      WireBytesRef name =
+          consume_string(&decoder, StringValidation::kNone, "name");
       if (!decoder.ok()) break;
       if (index > kMaxInt) continue;
       if (!validate_utf8(&decoder, name)) continue;
@@ -2572,7 +2655,8 @@ IndirectNameMap DecodeIndirectNameMap(base::Vector<const uint8_t> module_bytes,
       uint32_t inner_count = decoder.consume_u32v("inner count");
       for (uint32_t k = 0; k < inner_count; ++k) {
         uint32_t inner_index = decoder.consume_u32v("inner index");
-        WireBytesRef name = consume_string(&decoder, false, "name");
+        WireBytesRef name =
+            consume_string(&decoder, StringValidation::kNone, "name");
         if (!decoder.ok()) break;
         if (inner_index > kMaxInt) continue;
         // Ignore non-utf8 names.

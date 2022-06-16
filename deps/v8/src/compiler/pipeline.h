@@ -23,11 +23,10 @@ class ProfileDataFromFile;
 class RegisterConfiguration;
 
 namespace wasm {
+class AssemblerBufferCache;
 struct CompilationEnv;
 struct FunctionBody;
-class NativeModule;
 struct WasmCompilationResult;
-class WasmEngine;
 struct WasmModule;
 class WireBytesStorage;
 }  // namespace wasm
@@ -61,7 +60,8 @@ class Pipeline : public AllStatic {
       CallDescriptor* call_descriptor, SourcePositionTable* source_positions,
       NodeOriginTable* node_origins, wasm::FunctionBody function_body,
       const wasm::WasmModule* module, int function_index,
-      std::vector<compiler::WasmLoopInfo>* loop_infos);
+      std::vector<compiler::WasmLoopInfo>* loop_infos,
+      wasm::AssemblerBufferCache* buffer_cache);
 
   // Run the pipeline on a machine graph and generate code.
   static wasm::WasmCompilationResult GenerateCodeForWasmNativeStub(
@@ -102,7 +102,7 @@ class Pipeline : public AllStatic {
       const AssemblerOptions& options, Schedule* schedule = nullptr);
 
   // Run just the register allocator phases.
-  V8_EXPORT_PRIVATE static bool AllocateRegistersForTesting(
+  V8_EXPORT_PRIVATE static void AllocateRegistersForTesting(
       const RegisterConfiguration* config, InstructionSequence* sequence,
       bool use_fast_register_allocator, bool run_verifier);
 

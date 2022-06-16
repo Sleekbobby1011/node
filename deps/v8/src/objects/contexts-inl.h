@@ -15,7 +15,6 @@
 #include "src/objects/map-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/ordered-hash-table-inl.h"
-#include "src/objects/osr-optimized-code-cache-inl.h"
 #include "src/objects/regexp-match-info.h"
 #include "src/objects/scope-info.h"
 #include "src/objects/shared-function-info.h"
@@ -203,7 +202,7 @@ bool Context::HasSameSecurityTokenAs(Context that) const {
 NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_FIELD_ACCESSORS)
 #undef NATIVE_CONTEXT_FIELD_ACCESSORS
 
-#define CHECK_FOLLOWS2(v1, v2) STATIC_ASSERT((v1 + 1) == (v2))
+#define CHECK_FOLLOWS2(v1, v2) static_assert((v1 + 1) == (v2))
 #define CHECK_FOLLOWS4(v1, v2, v3, v4) \
   CHECK_FOLLOWS2(v1, v2);              \
   CHECK_FOLLOWS2(v2, v3);              \
@@ -296,8 +295,30 @@ ScriptContextTable NativeContext::synchronized_script_context_table() const {
       get(SCRIPT_CONTEXT_TABLE_INDEX, kAcquireLoad));
 }
 
+Map NativeContext::TypedArrayElementsKindToCtorMap(
+    ElementsKind element_kind) const {
+  int ctor_index = Context::FIRST_FIXED_TYPED_ARRAY_FUN_INDEX + element_kind -
+                   ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND;
+  Map map = Map::cast(JSFunction::cast(get(ctor_index)).initial_map());
+  DCHECK_EQ(map.elements_kind(), element_kind);
+  DCHECK(InstanceTypeChecker::IsJSTypedArray(map.instance_type()));
+  return map;
+}
+
+Map NativeContext::TypedArrayElementsKindToRabGsabCtorMap(
+    ElementsKind element_kind) const {
+  int ctor_index = Context::FIRST_RAB_GSAB_TYPED_ARRAY_MAP_INDEX +
+                   element_kind -
+                   ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND;
+  Map map = Map::cast(get(ctor_index));
+  DCHECK_EQ(map.elements_kind(),
+            GetCorrespondingRabGsabElementsKind(element_kind));
+  DCHECK(InstanceTypeChecker::IsJSTypedArray(map.instance_type()));
+  return map;
+}
+
 void NativeContext::SetOptimizedCodeListHead(Object head) {
-  set(OPTIMIZED_CODE_LIST, head, UPDATE_WEAK_WRITE_BARRIER, kReleaseStore);
+  set(OPTIMIZED_CODE_LIST, head, UPDATE_WRITE_BARRIER, kReleaseStore);
 }
 
 Object NativeContext::OptimizedCodeListHead() {
@@ -305,7 +326,7 @@ Object NativeContext::OptimizedCodeListHead() {
 }
 
 void NativeContext::SetDeoptimizedCodeListHead(Object head) {
-  set(DEOPTIMIZED_CODE_LIST, head, UPDATE_WEAK_WRITE_BARRIER, kReleaseStore);
+  set(DEOPTIMIZED_CODE_LIST, head, UPDATE_WRITE_BARRIER, kReleaseStore);
 }
 
 Object NativeContext::DeoptimizedCodeListHead() {

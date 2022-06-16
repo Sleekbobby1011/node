@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import { GraphView } from "../src/graph-view";
-import { ScheduleView } from "../src/schedule-view";
-import { SequenceView } from "../src/sequence-view";
-import { SourceResolver } from "../src/source-resolver";
-import { SelectionBroker } from "../src/selection-broker";
-import { View, PhaseView } from "../src/view";
+import { GraphView } from "./views/graph-view";
+import { ScheduleView } from "./views/schedule-view";
+import { SequenceView } from "./views/sequence-view";
+import { SourceResolver } from "./source-resolver";
+import { SelectionBroker } from "./selection/selection-broker";
+import { PhaseView, View } from "./views/view";
 import { GNode } from "./node";
+import { GraphPhase } from "./phases/graph-phase";
 
 const multiviewID = "multiview";
 
@@ -40,6 +41,7 @@ export class GraphMultiView extends View {
   }
 
   hide() {
+    this.container.className = "";
     this.hideCurrentPhase();
     super.hide();
   }
@@ -82,7 +84,7 @@ export class GraphMultiView extends View {
     view.sourceResolver.forEachPhase(phase => {
       const optionElement = document.createElement("option");
       let maxNodeId = "";
-      if (phase.type == "graph" && phase.highestNodeId != 0) {
+      if (phase instanceof GraphPhase && phase.highestNodeId != 0) {
         maxNodeId = ` ${phase.highestNodeId}`;
       }
       optionElement.text = `${phase.name}${maxNodeId}`;

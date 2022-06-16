@@ -67,10 +67,13 @@ Handle<WasmModuleObject> CompileReferenceModule(Zone* zone, Isolate* isolate,
     base::Vector<const uint8_t> func_code = wire_bytes.GetFunctionBytes(&func);
     FunctionBody func_body(func.sig, func.code.offset(), func_code.begin(),
                            func_code.end());
-    auto result = ExecuteLiftoffCompilation(
-        &env, func_body, func.func_index, kForDebugging,
-        LiftoffOptions{}.set_max_steps(max_steps).set_nondeterminism(
-            nondeterminism));
+    auto result =
+        ExecuteLiftoffCompilation(&env, func_body,
+                                  LiftoffOptions{}
+                                      .set_func_index(func.func_index)
+                                      .set_for_debugging(kForDebugging)
+                                      .set_max_steps(max_steps)
+                                      .set_nondeterminism(nondeterminism));
     native_module->PublishCode(
         native_module->AddCompiledCode(std::move(result)));
   }
@@ -94,15 +97,19 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
   if (module_object->module()->start_function_index >= 0) return;
 
   HandleScope handle_scope(isolate);  // Avoid leaking handles.
-  Handle<WasmInstanceObject> instance;
+  Handle<WasmInstanceObject> instance_ref;
 
-  // Try to instantiate, return if it fails.
+  // Try to instantiate the reference instance, return if it fails. Use
+  // {module_ref} if provided (for "Liftoff as reference"), {module_object}
+  // otherwise (for "interpreter as reference").
   {
-    ErrorThrower thrower(isolate, "WebAssembly Instantiation");
+    ErrorThrower thrower(isolate, "InterpretAndExecuteModule");
     if (!GetWasmEngine()
-             ->SyncInstantiate(isolate, &thrower, module_object, {},
-                               {})  // no imports & memory
-             .ToHandle(&instance)) {
+             ->SyncInstantiate(
+                 isolate, &thrower,
+                 module_ref.is_null() ? module_object : module_ref, {},
+                 {})  // no imports & memory
+             .ToHandle(&instance_ref)) {
       isolate->clear_pending_exception();
       thrower.Reset();  // Ignore errors.
       return;
@@ -111,7 +118,7 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
 
   // Get the "main" exported function. Do nothing if it does not exist.
   Handle<WasmExportedFunction> main_function;
-  if (!testing::GetExportedFunction(isolate, instance, "main")
+  if (!testing::GetExportedFunction(isolate, instance_ref, "main")
            .ToHandle(&main_function)) {
     return;
   }
@@ -119,17 +126,15 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
   base::OwnedVector<Handle<Object>> compiled_args =
       testing::MakeDefaultArguments(isolate, main_function->sig());
   bool exception_ref = false;
-  bool exception = false;
   int32_t result_ref = 0;
-  int32_t result = 0;
 
   if (module_ref.is_null()) {
+    // Use the interpreter as reference.
     base::OwnedVector<WasmValue> arguments =
         testing::MakeDefaultInterpreterArguments(isolate, main_function->sig());
 
-    // Now interpret.
     testing::WasmInterpretationResult interpreter_result =
-        testing::InterpretWasmModule(isolate, instance,
+        testing::InterpretWasmModule(isolate, instance_ref,
                                      main_function->function_index(),
                                      arguments.begin());
     if (interpreter_result.failed()) return;
@@ -147,25 +152,8 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
       DCHECK(interpreter_result.trapped());
       exception_ref = true;
     }
-    // Reset the instance before the test run.
-    {
-      ErrorThrower thrower(isolate, "Second Instantiation");
-      // We instantiated before, so the second instantiation must also succeed:
-      CHECK(GetWasmEngine()
-                ->SyncInstantiate(isolate, &thrower, module_object, {},
-                                  {})  // no imports & memory
-                .ToHandle(&instance));
-    }
   } else {
-    Handle<WasmInstanceObject> instance_ref;
-    {
-      ErrorThrower thrower(isolate, "WebAssembly Instantiation");
-      // We instantiated before, so the second instantiation must also succeed:
-      CHECK(GetWasmEngine()
-                ->SyncInstantiate(isolate, &thrower, module_ref, {},
-                                  {})  // no imports & memory
-                .ToHandle(&instance_ref));
-    }
+    // Use Liftoff code as reference.
     result_ref = testing::CallWasmFunctionForTesting(
         isolate, instance_ref, "main", static_cast<int>(compiled_args.size()),
         compiled_args.begin(), &exception_ref);
@@ -177,7 +165,24 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
     if (*nondeterminism != 0) return;
   }
 
-  result = testing::CallWasmFunctionForTesting(
+  // Instantiate a fresh instance for the actual (non-ref) execution.
+  Handle<WasmInstanceObject> instance;
+  {
+    ErrorThrower thrower(isolate, "InterpretAndExecuteModule (second)");
+    // We instantiated before, so the second instantiation must also succeed.
+    if (!GetWasmEngine()
+             ->SyncInstantiate(isolate, &thrower, module_object, {},
+                               {})  // no imports & memory
+             .ToHandle(&instance)) {
+      DCHECK(thrower.error());
+      FATAL("Second instantiation failed unexpectedly: %s",
+            thrower.error_msg());
+    }
+    DCHECK(!thrower.error());
+  }
+
+  bool exception = false;
+  int32_t result = testing::CallWasmFunctionForTesting(
       isolate, instance, "main", static_cast<int>(compiled_args.size()),
       compiled_args.begin(), &exception);
 
@@ -293,7 +298,7 @@ std::ostream& operator<<(std::ostream& os, const PrintName& name) {
 class InitExprInterface {
  public:
   static constexpr Decoder::ValidateFlag validate = Decoder::kFullValidation;
-  static constexpr DecodingMode decoding_mode = kInitExpression;
+  static constexpr DecodingMode decoding_mode = kConstantExpression;
 
   struct Value : public ValueBase<validate> {
     WasmInitExpr init_expr;
@@ -397,17 +402,27 @@ class InitExprInterface {
                                 : WasmInitExpr::ArrayInit(imm.index, args);
   }
 
-  void ArrayInitFromData(FullDecoder* decoder,
-                         const ArrayIndexImmediate<validate>& array_imm,
-                         const IndexImmediate<validate>& data_segment_imm,
-                         const Value& offset_value, const Value& length_value,
-                         const Value& rtt, Value* result) {
+  void ArrayInitFromSegment(FullDecoder* decoder,
+                            const ArrayIndexImmediate<validate>& array_imm,
+                            const IndexImmediate<validate>& data_segment_imm,
+                            const Value& offset_value,
+                            const Value& length_value, const Value& rtt,
+                            Value* result) {
     // TODO(7748): Implement.
     UNIMPLEMENTED();
   }
 
+  void I31New(FullDecoder* decoder, const Value& input, Value* result) {
+    result->init_expr = WasmInitExpr::I31New(zone_, input.init_expr);
+  }
+
   void RttCanon(FullDecoder* decoder, uint32_t type_index, Value* result) {
     result->init_expr = WasmInitExpr::RttCanon(type_index);
+  }
+
+  void StringConst(FullDecoder* decoder,
+                   const StringConstImmediate<validate>& imm, Value* result) {
+    result->init_expr = WasmInitExpr::StringConst(imm.index);
   }
 
   void DoReturn(FullDecoder* decoder, uint32_t /*drop_values*/) {
@@ -484,8 +499,14 @@ void AppendInitExpr(std::ostream& os, const WasmInitExpr& expr) {
       os << "ArrayInitStatic(" << expr.immediate().index;
       append_operands = true;
       break;
+    case WasmInitExpr::kI31New:
+      os << "I31New(" << expr.immediate().i32_const;
+      break;
     case WasmInitExpr::kRttCanon:
       os << "RttCanon(" << expr.immediate().index;
+      break;
+    case WasmInitExpr::kStringConst:
+      os << "StringConst(" << expr.immediate().index;
       break;
   }
 
@@ -524,7 +545,7 @@ void DecodeAndAppendInitExpr(StdoutStream& os, Zone* zone,
                         module_bytes.start() + ref.end_offset());
       WasmFeatures detected;
       WasmFullDecoder<Decoder::kFullValidation, InitExprInterface,
-                      kInitExpression>
+                      kConstantExpression>
           decoder(zone, module, WasmFeatures::All(), &detected, body, zone);
 
       decoder.DecodeFunctionBody();

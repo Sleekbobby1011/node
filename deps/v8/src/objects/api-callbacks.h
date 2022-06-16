@@ -71,8 +71,6 @@ class AccessorInfo : public TorqueGeneratedAccessorInfo<AccessorInfo, Struct> {
   using BodyDescriptor = StructBodyDescriptor;
 
  private:
-  inline bool HasExpectedReceiverType();
-
   // Bit positions in |flags|.
   DEFINE_TORQUE_GENERATED_ACCESSOR_INFO_FLAGS()
 
@@ -106,7 +104,7 @@ class InterceptorInfo
 };
 
 class CallHandlerInfo
-    : public TorqueGeneratedCallHandlerInfo<CallHandlerInfo, Struct> {
+    : public TorqueGeneratedCallHandlerInfo<CallHandlerInfo, HeapObject> {
  public:
   inline bool IsSideEffectFreeCallHandlerInfo() const;
   inline bool IsSideEffectCallHandlerInfo() const;
@@ -119,9 +117,24 @@ class CallHandlerInfo
   DECL_PRINTER(CallHandlerInfo)
   DECL_VERIFIER(CallHandlerInfo)
 
+  // [callback]: the address of the callback function.
+  DECL_EXTERNAL_POINTER_ACCESSORS(callback, Address)
+
+  // [js_callback]: either the address of the callback function as above,
+  // or a trampoline in case we are running with the simulator.
+  // Use this entry from generated code.
+  DECL_EXTERNAL_POINTER_ACCESSORS(js_callback, Address)
+
   Address redirected_callback() const;
 
-  using BodyDescriptor = StructBodyDescriptor;
+  class BodyDescriptor;
+
+ private:
+  friend class Factory;
+  friend class SerializerDeserializer;
+  friend class StartupSerializer;
+
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
 
   TQ_OBJECT_CONSTRUCTORS(CallHandlerInfo)
 };

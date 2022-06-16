@@ -400,14 +400,6 @@ DEF_GETTER(HeapObject, IsObjectHashTable, bool) {
 
 DEF_GETTER(HeapObject, IsHashTableBase, bool) { return IsHashTable(cage_base); }
 
-#if V8_ENABLE_WEBASSEMBLY
-DEF_GETTER(HeapObject, IsWasmExceptionPackage, bool) {
-  // It is not possible to check for the existence of certain properties on the
-  // underlying {JSReceiver} here because that requires calling handlified code.
-  return IsJSReceiver(cage_base);
-}
-#endif  // V8_ENABLE_WEBASSEMBLY
-
 bool Object::IsPrimitive() const {
   if (IsSmi()) return true;
   HeapObject this_heap_object = HeapObject::cast(*this);
@@ -708,8 +700,8 @@ CodeObjectSlot HeapObject::RawCodeField(int byte_offset) const {
   return CodeObjectSlot(field_address(byte_offset));
 }
 
-ExternalPointer_t HeapObject::RawExternalPointerField(int byte_offset) const {
-  return ReadRawExternalPointerField(field_address(byte_offset));
+ExternalPointerSlot HeapObject::RawExternalPointerField(int byte_offset) const {
+  return ExternalPointerSlot(field_address(byte_offset));
 }
 
 MapWord MapWord::FromMap(const Map map) {
@@ -761,18 +753,18 @@ HeapObject MapWord::ToForwardingAddress(PtrComprCageBase host_cage_base) {
 #ifdef VERIFY_HEAP
 void HeapObject::VerifyObjectField(Isolate* isolate, int offset) {
   VerifyPointer(isolate, TaggedField<Object>::load(isolate, *this, offset));
-  STATIC_ASSERT(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
+  static_assert(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
 }
 
 void HeapObject::VerifyMaybeObjectField(Isolate* isolate, int offset) {
   MaybeObject::VerifyMaybeObjectPointer(
       isolate, TaggedField<MaybeObject>::load(isolate, *this, offset));
-  STATIC_ASSERT(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
+  static_assert(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
 }
 
 void HeapObject::VerifySmiField(int offset) {
   CHECK(TaggedField<Object>::load(*this, offset).IsSmi());
-  STATIC_ASSERT(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
+  static_assert(!COMPRESS_POINTERS_BOOL || kTaggedSize == kInt32Size);
 }
 
 #endif
@@ -1180,6 +1172,7 @@ bool Object::IsShared() const {
     case SHARED_STRING_TYPE:
     case SHARED_ONE_BYTE_STRING_TYPE:
     case JS_SHARED_STRUCT_TYPE:
+    case JS_ATOMICS_MUTEX_TYPE:
       DCHECK(object.InSharedHeap());
       return true;
     case INTERNALIZED_STRING_TYPE:

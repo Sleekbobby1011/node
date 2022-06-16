@@ -26,8 +26,24 @@ class MaglevVregAllocationState {
 
 class MaglevVregAllocator {
  public:
-  void PreProcessGraph(MaglevCompilationUnit*, Graph* graph) {}
-  void PostProcessGraph(MaglevCompilationUnit*, Graph* graph) {
+  void PreProcessGraph(MaglevCompilationInfo*, Graph* graph) {
+    for (Constant* constant : graph->constants()) {
+      constant->AllocateVreg(&state_);
+    }
+    for (const auto& [index, constant] : graph->root()) {
+      constant->AllocateVreg(&state_);
+    }
+    for (const auto& [index, constant] : graph->smi()) {
+      constant->AllocateVreg(&state_);
+    }
+    for (const auto& [index, constant] : graph->int32()) {
+      constant->AllocateVreg(&state_);
+    }
+    for (const auto& [index, constant] : graph->float64()) {
+      constant->AllocateVreg(&state_);
+    }
+  }
+  void PostProcessGraph(MaglevCompilationInfo*, Graph* graph) {
     for (BasicBlock* block : *graph) {
       if (!block->has_phi()) continue;
       for (Phi* phi : *block->phis()) {
@@ -35,11 +51,11 @@ class MaglevVregAllocator {
       }
     }
   }
-  void PreProcessBasicBlock(MaglevCompilationUnit*, BasicBlock* block) {}
+  void PreProcessBasicBlock(MaglevCompilationInfo*, BasicBlock* block) {}
 
 #define DEF_PROCESS_NODE(NAME)                             \
   void Process(NAME* node, const ProcessingState& state) { \
-    node->AllocateVreg(&state_, state);                    \
+    node->AllocateVreg(&state_);                           \
   }
   NODE_BASE_LIST(DEF_PROCESS_NODE)
 #undef DEF_PROCESS_NODE

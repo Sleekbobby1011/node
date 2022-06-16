@@ -79,7 +79,7 @@ Map Map::GetInstanceTypeMap(ReadOnlyRoots roots, InstanceType type) {
 }
 
 VisitorId Map::GetVisitorId(Map map) {
-  STATIC_ASSERT(kVisitorIdCount <= 256);
+  static_assert(kVisitorIdCount <= 256);
 
   const int instance_type = map.instance_type();
 
@@ -195,7 +195,7 @@ VisitorId Map::GetVisitorId(Map map) {
       return kVisitJSWeakCollection;
 
     case CALL_HANDLER_INFO_TYPE:
-      return kVisitStruct;
+      return kVisitCallHandlerInfo;
 
     case JS_PROXY_TYPE:
       return kVisitStruct;
@@ -281,6 +281,7 @@ VisitorId Map::GetVisitorId(Map map) {
     case JS_SET_VALUE_ITERATOR_TYPE:
     case JS_SHADOW_REALM_TYPE:
     case JS_SHARED_STRUCT_TYPE:
+    case JS_ATOMICS_MUTEX_TYPE:
     case JS_STRING_ITERATOR_PROTOTYPE_TYPE:
     case JS_STRING_ITERATOR_TYPE:
     case JS_TEMPORAL_CALENDAR_TYPE:
@@ -310,6 +311,7 @@ VisitorId Map::GetVisitorId(Map map) {
 #endif  // V8_INTL_SUPPORT
 #if V8_ENABLE_WEBASSEMBLY
     case WASM_TAG_OBJECT_TYPE:
+    case WASM_EXCEPTION_PACKAGE_TYPE:
     case WASM_GLOBAL_OBJECT_TYPE:
     case WASM_MEMORY_OBJECT_TYPE:
     case WASM_MODULE_OBJECT_TYPE:
@@ -1083,7 +1085,7 @@ int Map::NumberOfEnumerableProperties() const {
   int result = 0;
   DescriptorArray descs = instance_descriptors(kRelaxedLoad);
   for (InternalIndex i : IterateOwnDescriptors()) {
-    if ((descs.GetDetails(i).attributes() & ONLY_ENUMERABLE) == 0 &&
+    if ((int{descs.GetDetails(i).attributes()} & ONLY_ENUMERABLE) == 0 &&
         !descs.GetKey(i).FilterKey(ENUMERABLE_STRINGS)) {
       result++;
     }
@@ -1202,7 +1204,7 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
       Handle<Map> fresh = Map::CopyNormalized(isolate, fast_map, mode);
       fresh->set_elements_kind(new_elements_kind);
 
-      STATIC_ASSERT(Map::kPrototypeValidityCellOffset ==
+      static_assert(Map::kPrototypeValidityCellOffset ==
                     Map::kDependentCodeOffset + kTaggedSize);
       DCHECK_EQ(0, memcmp(reinterpret_cast<void*>(fresh->address()),
                           reinterpret_cast<void*>(new_map->address()),
@@ -1224,7 +1226,7 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
       offset = Map::kPrototypeValidityCellOffset + kTaggedSize;
       if (new_map->is_prototype_map()) {
         // For prototype maps, the PrototypeInfo is not copied.
-        STATIC_ASSERT(Map::kTransitionsOrPrototypeInfoOffset ==
+        static_assert(Map::kTransitionsOrPrototypeInfoOffset ==
                       Map::kPrototypeValidityCellOffset + kTaggedSize);
         offset = kTransitionsOrPrototypeInfoOffset + kTaggedSize;
         DCHECK_EQ(fresh->raw_transitions(),
@@ -1243,7 +1245,6 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
     new_map->set_elements_kind(new_elements_kind);
     if (use_cache) {
       cache->Set(fast_map, new_map);
-      isolate->counters()->maps_normalized()->Increment();
     }
     if (FLAG_log_maps) {
       LOG(isolate, MapEvent("Normalize", fast_map, new_map, reason));
@@ -1597,7 +1598,7 @@ Handle<Map> Map::AsLanguageMode(Isolate* isolate, Handle<Map> initial_map,
                                shared_info->function_map_index())),
                            isolate);
 
-  STATIC_ASSERT(LanguageModeSize == 2);
+  static_assert(LanguageModeSize == 2);
   DCHECK_EQ(LanguageMode::kStrict, shared_info->language_mode());
   Handle<Symbol> transition_symbol =
       isolate->factory()->strict_function_transition_symbol();

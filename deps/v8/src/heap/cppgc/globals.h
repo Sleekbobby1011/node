@@ -43,7 +43,10 @@ constexpr size_t kPageSize = 1 << kPageSizeLog2;
 constexpr size_t kPageOffsetMask = kPageSize - 1;
 constexpr size_t kPageBaseMask = ~kPageOffsetMask;
 
-#if defined(V8_TARGET_ARCH_ARM64) && defined(V8_OS_MACOS)
+#if defined(__aarch64__) && defined(V8_OS_MACOS)
+#if !defined(V8_TARGET_ARCH_ARM64)
+#error "V8_TARGET_ARCH_ARM64 and __aarch64__ must match"
+#endif  // !defined(V8_TARGET_ARCH_ARM64)
 // No guard pages on ARM64 macOS. This target has 16 kiB pages, meaning that
 // the guard pages do not protect anything, since there is no inaccessible
 // region surrounding the allocation.
@@ -75,6 +78,11 @@ constexpr size_t kFreeListEntrySize = 2 * sizeof(uintptr_t);
 
 constexpr size_t kCagedHeapReservationSize = static_cast<size_t>(4) * kGB;
 constexpr size_t kCagedHeapReservationAlignment = kCagedHeapReservationSize;
+// TODO(v8:12231): To reduce OOM probability, instead of the fixed-size
+// reservation consider to use a moving needle implementation or simply
+// calibrating this 2GB/2GB split.
+constexpr size_t kCagedHeapNormalPageReservationSize =
+    kCagedHeapReservationSize / 2;
 
 }  // namespace internal
 }  // namespace cppgc

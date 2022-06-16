@@ -56,7 +56,8 @@ class ElementsAccessor {
   // typed array elements.
   virtual bool HasEntry(JSObject holder, InternalIndex entry) = 0;
 
-  virtual Handle<Object> Get(Handle<JSObject> holder, InternalIndex entry) = 0;
+  virtual Handle<Object> Get(Isolate* isolate, Handle<JSObject> holder,
+                             InternalIndex entry) = 0;
 
   virtual bool HasAccessors(JSObject holder) = 0;
   virtual size_t NumberOfElements(JSObject holder) = 0;
@@ -85,12 +86,12 @@ class ElementsAccessor {
       PropertyFilter filter = ALL_PROPERTIES) = 0;
 
   virtual MaybeHandle<FixedArray> PrependElementIndices(
-      Handle<JSObject> object, Handle<FixedArrayBase> backing_store,
-      Handle<FixedArray> keys, GetKeysConversion convert,
-      PropertyFilter filter = ALL_PROPERTIES) = 0;
+      Isolate* isolate, Handle<JSObject> object,
+      Handle<FixedArrayBase> backing_store, Handle<FixedArray> keys,
+      GetKeysConversion convert, PropertyFilter filter = ALL_PROPERTIES) = 0;
 
   inline MaybeHandle<FixedArray> PrependElementIndices(
-      Handle<JSObject> object, Handle<FixedArray> keys,
+      Isolate* isolate, Handle<JSObject> object, Handle<FixedArray> keys,
       GetKeysConversion convert, PropertyFilter filter = ALL_PROPERTIES);
 
   V8_WARN_UNUSED_RESULT virtual ExceptionStatus AddElementsToKeyAccumulator(

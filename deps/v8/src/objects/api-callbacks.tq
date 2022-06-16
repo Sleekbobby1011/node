@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-extern class CallHandlerInfo extends Struct {
-  callback: NonNullForeign|Undefined|Zero;
-  js_callback: NonNullForeign|Undefined|Zero;
+extern class CallHandlerInfo extends HeapObject {
   data: Object;
+  callback: ExternalPointer;
+  // This either points at the same as above, or a trampoline in case we are
+  // running with the simulator. Use this entry from generated code.
+  js_callback: ExternalPointer;
 }
 
 bitfield struct InterceptorInfoFlags extends uint31 {
@@ -51,11 +53,10 @@ bitfield struct AccessorInfoFlags extends uint31 {
 extern class AccessorInfo extends Struct {
   name: Name;
   flags: SmiTagged<AccessorInfoFlags>;
-  expected_receiver_type: Object;
   setter: NonNullForeign|Zero;
   getter: NonNullForeign|Zero;
   // This either points at the same as above, or a trampoline in case we are
-  // running with the simulator. Use these entries from generated code.
+  // running with the simulator. Use this entry from generated code.
   js_getter: NonNullForeign|Zero;
   data: Object;
 }

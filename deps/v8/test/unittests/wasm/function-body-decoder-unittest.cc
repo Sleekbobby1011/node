@@ -4667,9 +4667,9 @@ class WasmOpcodeLengthTest : public TestWithZone {
 
   // Helper to check for prefixed opcodes, which can have multiple bytes.
   void ExpectLengthPrefixed(unsigned operands, WasmOpcode opcode) {
-    uint8_t prefix = (opcode >> 8) & 0xff;
+    uint8_t prefix = WasmOpcodes::ExtractPrefix(opcode);
     DCHECK(WasmOpcodes::IsPrefixOpcode(static_cast<WasmOpcode>(prefix)));
-    uint8_t index = opcode & 0xff;
+    uint16_t index = ExtractPrefixedOpcodeBytes(opcode);
     uint8_t encoded[2] = {0, 0};
     uint8_t* p = encoded;
     unsigned len = static_cast<unsigned>(LEBHelper::sizeof_u32v(index));
@@ -4831,10 +4831,21 @@ TEST_F(WasmOpcodeLengthTest, IllegalRefIndices) {
   ExpectFailure(kExprBlock, kOptRefCode, U32V_4(0x01000000));
 }
 
-TEST_F(WasmOpcodeLengthTest, PrefixedOpcodesLEB) {
-  // kExprI32New with a 4-byte LEB-encoded opcode.
-  ExpectLength(5, 0xfb, 0xa0, 0x80, 0x80, 0x00);
+TEST_F(WasmOpcodeLengthTest, GCOpcodes) {
+  // GC opcodes aren't parsed as LEBs.
 
+  // struct.new_with_rtt, with leb immediate operand.
+  ExpectLength(3, 0xfb, 0x01, 0x42);
+  ExpectLength(4, 0xfb, 0x01, 0x80, 0x00);
+
+  // string.new_wtf8 with $mem=0.
+  ExpectLength(3, 0xfb, 0x80, 0x00);
+
+  // string.as_wtf8.
+  ExpectLength(2, 0xfb, 0x90);
+}
+
+TEST_F(WasmOpcodeLengthTest, PrefixedOpcodesLEB) {
   // kExprI8x16Splat with a 3-byte LEB-encoded opcode.
   ExpectLength(4, 0xfd, 0x8f, 0x80, 0x00);
 

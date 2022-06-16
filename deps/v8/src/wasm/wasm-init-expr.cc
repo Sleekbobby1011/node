@@ -45,8 +45,12 @@ ValueType WasmInitExpr::type(const WasmModule* module,
     case kArrayInit:
     case kArrayInitStatic:
       return ValueType::Ref(immediate().index, kNonNullable);
+    case kI31New:
+      return kWasmI31Ref.AsNonNull();
     case kRttCanon:
       return ValueType::Rtt(immediate().heap_type);
+    case kStringConst:
+      return ValueType::Ref(HeapType::kString, kNonNullable);
   }
 }
 

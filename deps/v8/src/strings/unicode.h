@@ -179,6 +179,9 @@ class V8_EXPORT_PRIVATE Utf8 {
   // The maximum size a single UTF-16 code unit may take up when encoded as
   // UTF-8.
   static const unsigned kMax16BitCodeUnitSize = 3;
+  // The maximum size a single UTF-16 code unit known to be in the range
+  // [0,0xff] may take up when encoded as UTF-8.
+  static const unsigned kMax8BitCodeUnitSize = 2;
   static inline uchar ValueOf(const byte* str, size_t length, size_t* cursor);
 
   using Utf8IncrementalBuffer = uint32_t;
@@ -199,6 +202,23 @@ class V8_EXPORT_PRIVATE Utf8 {
   // - valid code point range.
   static bool ValidateEncoding(const byte* str, size_t length);
 };
+
+#if V8_ENABLE_WEBASSEMBLY
+class Wtf8 {
+ public:
+  // Validate that the input has a valid WTF-8 encoding.
+  //
+  // This method checks for:
+  // - valid utf-8 endcoding (e.g. no over-long encodings),
+  // - absence of surrogate pairs,
+  // - valid code point range.
+  //
+  // In terms of the WTF-8 specification (https://simonsapin.github.io/wtf-8/),
+  // this function checks for a valid "generalized UTF-8" sequence, with the
+  // additional constraint that surrogate pairs are not allowed.
+  static bool ValidateEncoding(const byte* str, size_t length);
+};
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 struct Uppercase {
   static bool Is(uchar c);

@@ -26,7 +26,7 @@
 namespace v8 {
 namespace internal {
 
-#ifdef V8_SANDBOX_IS_AVAILABLE
+#ifdef V8_ENABLE_SANDBOX
 
 // Best-effort helper function to determine the size of the userspace virtual
 // address space. Used to determine appropriate sandbox size and placement.
@@ -95,15 +95,15 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
   // creating a partially reserved sandbox, as that allows covering more virtual
   // address space. This happens for CPUs with only 36 virtual address bits, in
   // which case the sandbox size would end up being only 8GB.
-  bool partially_reserve = false;
+  bool create_partially_reserved_sandbox = false;
   if (sandbox_size < kSandboxMinimumSize) {
     static_assert(
         (8ULL * GB) >= kSandboxMinimumReservationSize,
         "Minimum reservation size for a partially reserved sandbox must be at "
-        "most 8GB to support CPUs with only 36 virtual address bits");
+        "most 8GB to support systems with only 36 virtual address bits");
     size_to_reserve = sandbox_size;
     sandbox_size = kSandboxMinimumSize;
-    partially_reserve = true;
+    create_partially_reserved_sandbox = true;
   }
 
 #if defined(V8_OS_WIN)
@@ -116,7 +116,7 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
     // doesn't reserve most of the virtual memory, and so doesn't incur the
     // cost, but also doesn't provide the desired security benefits.
     size_to_reserve = kSandboxMinimumReservationSize;
-    partially_reserve = true;
+    create_partially_reserved_sandbox = true;
   }
 #endif  // V8_OS_WIN
 
@@ -131,18 +131,19 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
     // technically required for a different reason (large virtual memory
     // reservations being too expensive).
     size_to_reserve = kSandboxMinimumReservationSize;
-    partially_reserve = true;
+    create_partially_reserved_sandbox = true;
   }
 
   // In any case, the sandbox must be at most as large as our address space.
   DCHECK_LE(sandbox_size, address_space_limit);
 
-  if (partially_reserve) {
-    return InitializeAsPartiallyReservedSandbox(vas, sandbox_size,
-                                                size_to_reserve);
+  bool success = false;
+  if (create_partially_reserved_sandbox) {
+    success = InitializeAsPartiallyReservedSandbox(vas, sandbox_size,
+                                                   size_to_reserve);
   } else {
     const bool use_guard_regions = true;
-    bool success = Initialize(vas, sandbox_size, use_guard_regions);
+    success = Initialize(vas, sandbox_size, use_guard_regions);
 #ifdef V8_SANDBOXED_POINTERS
     // If sandboxed pointers are enabled, we need the sandbox to be initialized,
     // so fall back to creating a partially reserved sandbox.
@@ -154,8 +155,17 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
           vas, sandbox_size, kSandboxMinimumReservationSize);
     }
 #endif  // V8_SANDBOXED_POINTERS
-    return success;
   }
+
+#ifdef V8_SANDBOXED_POINTERS
+  if (!success) {
+    V8::FatalProcessOutOfMemory(
+        nullptr,
+        "Failed to reserve the virtual address space for the V8 sandbox");
+  }
+#endif  // V8_SANDBOXED_POINTERS
+
+  return success;
 }
 
 bool Sandbox::Initialize(v8::VirtualAddressSpace* vas, size_t size,
@@ -223,10 +233,10 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas, size_t size,
           address_space_.get());
 
   initialized_ = true;
-  is_partially_reserved_ = false;
 
   InitializeConstants();
 
+  DCHECK(!is_partially_reserved());
   return true;
 }
 
@@ -283,7 +293,6 @@ bool Sandbox::InitializeAsPartiallyReservedSandbox(v8::VirtualAddressSpace* vas,
   end_ = base_ + size_;
   reservation_size_ = size_to_reserve;
   initialized_ = true;
-  is_partially_reserved_ = true;
   address_space_ = std::make_unique<base::EmulatedVirtualAddressSubspace>(
       vas, reservation_base_, reservation_size_, size_);
   sandbox_page_allocator_ =
@@ -292,6 +301,7 @@ bool Sandbox::InitializeAsPartiallyReservedSandbox(v8::VirtualAddressSpace* vas,
 
   InitializeConstants();
 
+  DCHECK(is_partially_reserved());
   return true;
 }
 
@@ -314,7 +324,6 @@ void Sandbox::TearDown() {
     reservation_base_ = kNullAddress;
     reservation_size_ = 0;
     initialized_ = false;
-    is_partially_reserved_ = false;
 #ifdef V8_SANDBOXED_POINTERS
     constants_.Reset();
 #endif
@@ -322,9 +331,9 @@ void Sandbox::TearDown() {
   disabled_ = false;
 }
 
-#endif  // V8_SANDBOX_IS_AVAILABLE
+#endif  // V8_ENABLE_SANDBOX
 
-#ifdef V8_SANDBOX
+#ifdef V8_ENABLE_SANDBOX
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(Sandbox, GetProcessWideSandbox)
 #endif
 

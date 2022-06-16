@@ -172,21 +172,6 @@ bool IsUnscavengedHeapObjectSlot(Heap* heap, FullObjectSlot p) {
 
 }  // namespace
 
-class ScavengeWeakObjectRetainer : public WeakObjectRetainer {
- public:
-  Object RetainAs(Object object) override {
-    if (!Heap::InFromPage(object)) {
-      return object;
-    }
-
-    MapWord map_word = HeapObject::cast(object).map_word(kRelaxedLoad);
-    if (map_word.IsForwardingAddress()) {
-      return map_word.ToForwardingAddress();
-    }
-    return Object();
-  }
-};
-
 ScavengerCollector::JobTask::JobTask(
     ScavengerCollector* outer,
     std::vector<std::unique_ptr<Scavenger>>* scavengers,
@@ -284,11 +269,12 @@ void ScavengerCollector::CollectGarbage() {
   std::vector<std::unique_ptr<Scavenger>> scavengers;
   Scavenger::EmptyChunksList empty_chunks;
   const int num_scavenge_tasks = NumberOfScavengeTasks();
-  Scavenger::CopiedList copied_list;
-  Scavenger::PromotionList promotion_list;
   EphemeronTableList ephemeron_table_list;
 
   {
+    Scavenger::CopiedList copied_list;
+    Scavenger::PromotionList promotion_list;
+
     Sweeper* sweeper = heap_->mark_compact_collector()->sweeper();
 
     // Pause the concurrent sweeper.
@@ -322,7 +308,7 @@ void ScavengerCollector::CollectGarbage() {
       TRACE_GC(
           heap_->tracer(),
           GCTracer::Scope::SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_IDENTIFY);
-      isolate_->global_handles()->IdentifyWeakUnmodifiedObjects(
+      isolate_->global_handles()->ComputeWeaknessForYoungObjects(
           &JSObject::IsUnmodifiedApiObject);
     }
     {
@@ -351,31 +337,25 @@ void ScavengerCollector::CollectGarbage() {
                                               std::move(memory_chunks),
                                               &copied_list, &promotion_list))
           ->Join();
-      DCHECK(copied_list.IsEmpty());
-      DCHECK(promotion_list.IsEmpty());
+      CHECK(copied_list.IsEmpty());
+      CHECK(promotion_list.IsEmpty());
     }
 
     if (V8_UNLIKELY(FLAG_scavenge_separate_stack_scanning)) {
       IterateStackAndScavenge(&root_scavenge_visitor, &scavengers,
                               kMainThreadId);
-      DCHECK(copied_list.IsEmpty());
-      DCHECK(promotion_list.IsEmpty());
+      CHECK(copied_list.IsEmpty());
+      CHECK(promotion_list.IsEmpty());
     }
 
     {
       // Scavenge weak global handles.
       TRACE_GC(heap_->tracer(),
                GCTracer::Scope::SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_PROCESS);
-      isolate_->global_handles()->MarkYoungWeakDeadObjectsPending(
-          &IsUnscavengedHeapObjectSlot);
-      isolate_->global_handles()->IterateYoungWeakDeadObjectsForFinalizers(
-          &root_scavenge_visitor);
-      scavengers[kMainThreadId]->Process();
-
-      DCHECK(copied_list.IsEmpty());
-      DCHECK(promotion_list.IsEmpty());
-      isolate_->global_handles()->IterateYoungWeakObjectsForPhantomHandles(
+      isolate_->global_handles()->ProcessWeakYoungObjects(
           &root_scavenge_visitor, &IsUnscavengedHeapObjectSlot);
+      CHECK(copied_list.IsEmpty());
+      CHECK(promotion_list.IsEmpty());
     }
 
     {
@@ -404,13 +384,20 @@ void ScavengerCollector::CollectGarbage() {
     if (V8_UNLIKELY(FLAG_track_retaining_path)) {
       heap_->UpdateRetainersAfterScavenge();
     }
+
+    if (V8_UNLIKELY(FLAG_always_use_string_forwarding_table)) {
+      isolate_->string_forwarding_table()->UpdateAfterEvacuation();
+    }
   }
+
+  SemiSpaceNewSpace* semi_space_new_space =
+      SemiSpaceNewSpace::From(heap_->new_space());
 
   if (FLAG_concurrent_marking) {
     // Ensure that concurrent marker does not track pages that are
     // going to be unmapped.
     for (Page* p :
-         PageRange(heap_->new_space()->from_space().first_page(), nullptr)) {
+         PageRange(semi_space_new_space->from_space().first_page(), nullptr)) {
       heap_->concurrent_marking()->ClearMemoryChunkData(p);
     }
   }
@@ -418,50 +405,55 @@ void ScavengerCollector::CollectGarbage() {
   ProcessWeakReferences(&ephemeron_table_list);
 
   // Set age mark.
-  heap_->new_space_->set_age_mark(heap_->new_space()->top());
+  semi_space_new_space->set_age_mark(semi_space_new_space->top());
 
-  // Since we promote all surviving large objects immediatelly, all remaining
+  // Since we promote all surviving large objects immediately, all remaining
   // large objects must be dead.
   // TODO(hpayer): Don't free all as soon as we have an intermediate generation.
   heap_->new_lo_space()->FreeDeadObjects([](HeapObject) { return true; });
 
-  {
-    TRACE_GC(heap_->tracer(), GCTracer::Scope::SCAVENGER_FREE_REMEMBERED_SET);
-    Scavenger::EmptyChunksList::Local empty_chunks_local(&empty_chunks);
-    MemoryChunk* chunk;
-    while (empty_chunks_local.Pop(&chunk)) {
-      // Since sweeping was already restarted only check chunks that already got
-      // swept.
-      if (chunk->SweepingDone()) {
-        RememberedSet<OLD_TO_NEW>::CheckPossiblyEmptyBuckets(chunk);
-      } else {
-        chunk->possibly_empty_buckets()->Release();
-      }
-    }
-
-#ifdef DEBUG
-    RememberedSet<OLD_TO_NEW>::IterateMemoryChunks(
-        heap_, [](MemoryChunk* chunk) {
-          DCHECK(chunk->possibly_empty_buckets()->IsEmpty());
-        });
-#endif
-  }
+  ProcessChunksWithEmptyBuckets(&empty_chunks);
 
   {
     TRACE_GC(heap_->tracer(), GCTracer::Scope::SCAVENGER_SWEEP_ARRAY_BUFFERS);
     SweepArrayBufferExtensions();
   }
 
+  isolate_->global_handles()->UpdateListOfYoungNodes();
+
   // Update how much has survived scavenge.
   heap_->IncrementYoungSurvivorsCounter(heap_->SurvivedYoungObjectSize());
 }
 
-void ScavengerCollector::IterateStackAndScavenge(
+void ScavengerCollector::ProcessChunksWithEmptyBuckets(
+    Scavenger::EmptyChunksList* empty_chunks) {
+  TRACE_GC(heap_->tracer(), GCTracer::Scope::SCAVENGER_FREE_REMEMBERED_SET);
+  Scavenger::EmptyChunksList::Local empty_chunks_local(empty_chunks);
+  MemoryChunk* chunk;
+  while (empty_chunks_local.Pop(&chunk)) {
+    // Since sweeping was already restarted only check chunks that already got
+    // swept.
+    if (chunk->SweepingDone()) {
+      RememberedSet<OLD_TO_NEW>::CheckPossiblyEmptyBuckets(chunk);
+    } else {
+      chunk->possibly_empty_buckets()->Release();
+    }
+  }
 
+#ifdef DEBUG
+  RememberedSet<OLD_TO_NEW>::IterateMemoryChunks(heap_, [](MemoryChunk* chunk) {
+    DCHECK(chunk->possibly_empty_buckets()->IsEmpty());
+  });
+#endif
+
+  CHECK(empty_chunks->IsEmpty());
+}
+
+void ScavengerCollector::IterateStackAndScavenge(
     RootScavengeVisitor* root_scavenge_visitor,
     std::vector<std::unique_ptr<Scavenger>>* scavengers, int main_thread_id) {
   // Scan the stack, scavenge the newly discovered objects, and report
-  // the survival statistics before and afer the stack scanning.
+  // the survival statistics before and after the stack scanning.
   // This code is not intended for production.
   TRACE_GC(heap_->tracer(), GCTracer::Scope::SCAVENGER_SCAVENGE_STACK_ROOTS);
   size_t survived_bytes_before = 0;
@@ -517,6 +509,7 @@ void ScavengerCollector::HandleSurvivingNewLargeObjects() {
     heap_->lo_space()->PromoteNewLargeObject(page);
   }
   surviving_new_large_objects_.clear();
+  heap_->new_lo_space()->set_objects_size(0);
 }
 
 void ScavengerCollector::MergeSurvivingNewLargeObjects(
@@ -531,7 +524,10 @@ void ScavengerCollector::MergeSurvivingNewLargeObjects(
 int ScavengerCollector::NumberOfScavengeTasks() {
   if (!FLAG_parallel_scavenge) return 1;
   const int num_scavenge_tasks =
-      static_cast<int>(heap_->new_space()->TotalCapacity()) / MB + 1;
+      static_cast<int>(
+          SemiSpaceNewSpace::From(heap_->new_space())->TotalCapacity()) /
+          MB +
+      1;
   static int num_cores = V8::GetCurrentPlatform()->NumberOfWorkerThreads() + 1;
   int tasks = std::max(
       1, std::min({num_scavenge_tasks, kMaxScavengerTasks, num_cores}));
@@ -625,7 +621,8 @@ void Scavenger::ScavengePage(MemoryChunk* page) {
   CodePageMemoryModificationScope memory_modification_scope(page);
 
   if (page->slot_set<OLD_TO_NEW, AccessMode::ATOMIC>() != nullptr) {
-    InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToNew(page);
+    InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToNew(
+        page, InvalidatedSlotsFilter::LivenessCheck::kNo);
     RememberedSet<OLD_TO_NEW>::IterateAndTrackEmptyBuckets(
         page,
         [this, &filter](MaybeObjectSlot slot) {
@@ -687,8 +684,6 @@ void Scavenger::Process(JobDelegate* delegate) {
 
 void ScavengerCollector::ProcessWeakReferences(
     EphemeronTableList* ephemeron_table_list) {
-  ScavengeWeakObjectRetainer weak_object_retainer;
-  heap_->ProcessYoungWeakReferences(&weak_object_retainer);
   ClearYoungEphemerons(ephemeron_table_list);
   ClearOldEphemerons();
 }

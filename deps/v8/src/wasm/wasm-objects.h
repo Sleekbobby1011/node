@@ -19,6 +19,7 @@
 #include "src/objects/js-function.h"
 #include "src/objects/js-objects.h"
 #include "src/objects/objects.h"
+#include "src/wasm/module-instantiate.h"
 #include "src/wasm/stacks.h"
 #include "src/wasm/struct-types.h"
 #include "src/wasm/value-type.h"
@@ -255,7 +256,7 @@ class WasmMemoryObject
   inline bool has_maximum_pages();
 
   V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(
-      Isolate* isolate, MaybeHandle<JSArrayBuffer> buffer, int maximum);
+      Isolate* isolate, Handle<JSArrayBuffer> buffer, int maximum);
 
   V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(Isolate* isolate,
                                                              int initial,
@@ -303,6 +304,7 @@ class WasmGlobalObject
   inline void SetF64(double value);
   inline void SetExternRef(Handle<Object> value);
   inline bool SetFuncRef(Isolate* isolate, Handle<Object> value);
+  inline void SetStringRef(Handle<Object> value);
 
  private:
   // This function returns the address of the global's data in the
@@ -418,13 +420,13 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
 
   DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
                                 WASM_INSTANCE_OBJECT_FIELDS)
-  STATIC_ASSERT(IsAligned(kHeaderSize, kTaggedSize));
+  static_assert(IsAligned(kHeaderSize, kTaggedSize));
   // TODO(ishell, v8:8875): When pointer compression is enabled 8-byte size
   // fields (external pointers, doubles and BigInt data) are only kTaggedSize
   // aligned so checking for alignments of fields bigger than kTaggedSize
   // doesn't make sense until v8:8875 is fixed.
 #define ASSERT_FIELD_ALIGNED(offset, size)                                 \
-  STATIC_ASSERT(size == 0 || IsAligned(offset, size) ||                    \
+  static_assert(size == 0 || IsAligned(offset, size) ||                    \
                 (COMPRESS_POINTERS_BOOL && (size == kSystemPointerSize) && \
                  IsAligned(offset, kTaggedSize)));
   WASM_INSTANCE_OBJECT_FIELDS(ASSERT_FIELD_ALIGNED)
@@ -474,13 +476,13 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
                                uint32_t src,
                                uint32_t count) V8_WARN_UNUSED_RESULT;
 
-  // Copy table entries from an element segment. Returns {false} if the ranges
-  // are out-of-bounds.
-  static bool InitTableEntries(Isolate* isolate,
-                               Handle<WasmInstanceObject> instance,
-                               uint32_t table_index, uint32_t segment_index,
-                               uint32_t dst, uint32_t src,
-                               uint32_t count) V8_WARN_UNUSED_RESULT;
+  // Loads a range of elements from element segment into a table.
+  // Returns the empty {Optional} if the operation succeeds, or an {Optional}
+  // with the error {MessageTemplate} if it fails.
+  static base::Optional<MessageTemplate> InitTableEntries(
+      Isolate* isolate, Handle<WasmInstanceObject> instance,
+      uint32_t table_index, uint32_t segment_index, uint32_t dst, uint32_t src,
+      uint32_t count) V8_WARN_UNUSED_RESULT;
 
   // Iterates all fields in the object except the untagged fields.
   class BodyDescriptor;
@@ -569,6 +571,8 @@ class V8_EXPORT_PRIVATE WasmExceptionPackage : public JSObject {
   static uint32_t GetEncodedSize(const wasm::WasmTag* tag);
 
   DECL_CAST(WasmExceptionPackage)
+  DECL_PRINTER(WasmExceptionPackage)
+  DECL_VERIFIER(WasmExceptionPackage)
   OBJECT_CONSTRUCTORS(WasmExceptionPackage, JSObject);
 };
 
@@ -687,7 +691,7 @@ class WasmIndirectFunctionTable
 
   DECL_PRINTER(WasmIndirectFunctionTable)
 
-  STATIC_ASSERT(kStartOfStrongFieldsOffset == kManagedNativeAllocationsOffset);
+  static_assert(kStartOfStrongFieldsOffset == kManagedNativeAllocationsOffset);
   using BodyDescriptor = FlexibleBodyDescriptor<kStartOfStrongFieldsOffset>;
 
   TQ_OBJECT_CONSTRUCTORS(WasmIndirectFunctionTable)
@@ -973,6 +977,9 @@ class WasmArray : public TorqueGeneratedWasmArray<WasmArray, WasmObject> {
   static inline Handle<Object> GetElement(Isolate* isolate,
                                           Handle<WasmArray> array,
                                           uint32_t index);
+
+  void SetTaggedElement(uint32_t index, Handle<Object> value,
+                        WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // Returns the offset/Address of the element at {index}.
   inline uint32_t element_offset(uint32_t index);

@@ -50,9 +50,6 @@ class MemoryChunk : public BasicMemoryChunk {
   // Page size in bytes.  This must be a multiple of the OS page size.
   static const int kPageSize = 1 << kPageSizeBits;
 
-  // Maximum number of nested code memory modification scopes.
-  static const int kMaxWriteUnprotectCounter = 3;
-
   MemoryChunk(Heap* heap, BaseSpace* space, size_t size, Address area_start,
               Address area_end, VirtualMemory reservation,
               Executability executable, PageSize page_size);
@@ -143,8 +140,11 @@ class MemoryChunk : public BasicMemoryChunk {
   template <RememberedSetType type>
   void ReleaseInvalidatedSlots();
   template <RememberedSetType type>
-  V8_EXPORT_PRIVATE void RegisterObjectWithInvalidatedSlots(HeapObject object);
-  void InvalidateRecordedSlots(HeapObject object);
+  V8_EXPORT_PRIVATE void RegisterObjectWithInvalidatedSlots(HeapObject object,
+                                                            int new_size);
+  template <RememberedSetType type>
+  V8_EXPORT_PRIVATE void UpdateInvalidatedObjectSize(HeapObject object,
+                                                     int new_size);
   template <RememberedSetType type>
   bool RegisteredObjectWithInvalidatedSlots(HeapObject object);
   template <RememberedSetType type>
@@ -188,8 +188,12 @@ class MemoryChunk : public BasicMemoryChunk {
   void InitializationMemoryFence();
 
   static PageAllocator::Permission GetCodeModificationPermission() {
-    return FLAG_write_code_using_rwx ? PageAllocator::kReadWriteExecute
-                                     : PageAllocator::kReadWrite;
+    DCHECK(!V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT);
+    // On MacOS on ARM64 RWX permissions are allowed to be set only when
+    // fast W^X is enabled (see V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT).
+    return !V8_HAS_PTHREAD_JIT_WRITE_PROTECT && FLAG_write_code_using_rwx
+               ? PageAllocator::kReadWriteExecute
+               : PageAllocator::kReadWrite;
   }
 
   V8_EXPORT_PRIVATE void SetReadable();
@@ -262,8 +266,6 @@ class MemoryChunk : public BasicMemoryChunk {
   // counter is decremented when a component resets to read+executable.
   // If Value() == 0 => The memory is read and executable.
   // If Value() >= 1 => The Memory is read and writable (and maybe executable).
-  // The maximum value is limited by {kMaxWriteUnprotectCounter} to prevent
-  // excessive nesting of scopes.
   // All executable MemoryChunks are allocated rw based on the assumption that
   // they will be used immediately for an allocation. They are initialized
   // with the number of open CodeSpaceMemoryModificationScopes. The caller

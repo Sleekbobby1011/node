@@ -69,6 +69,9 @@ declare_args() {
   # executed as standard JavaScript instead.
   v8_enable_webassembly = ""
 
+  # Enable 256-bit long vector re-vectorization pass in WASM compilation pipeline.
+  v8_enable_wasm_simd256_revec = false
+
   # Enable runtime call stats.
   v8_enable_runtime_call_stats = !is_on_release_branch
 
@@ -87,6 +90,9 @@ declare_args() {
 
   # Enable young generation in cppgc.
   cppgc_enable_young_generation = false
+
+  # Enable pointer compression in cppgc.
+  cppgc_enable_pointer_compression = false
 
   # Enable advanced BigInt algorithms, costing about 10-30 KB binary size
   # depending on platform. Disabled on Android to save binary size.

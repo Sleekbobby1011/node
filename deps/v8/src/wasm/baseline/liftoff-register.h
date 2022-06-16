@@ -282,7 +282,7 @@ class LiftoffRegister {
   }
 
   constexpr int liftoff_code() const {
-    STATIC_ASSERT(sizeof(int) >= sizeof(storage_t));
+    static_assert(sizeof(int) >= sizeof(storage_t));
     return static_cast<int>(code_);
   }
 
@@ -469,7 +469,7 @@ class LiftoffRegList {
   template <storage_t bits>
   static constexpr LiftoffRegList FromBits() {
     static_assert(bits == (bits & (kGpMask | kFpMask)), "illegal reg list");
-    return LiftoffRegList(bits);
+    return LiftoffRegList{bits};
   }
 
  private:

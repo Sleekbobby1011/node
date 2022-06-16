@@ -73,16 +73,21 @@ namespace wasm {
   CASE_SIGN_OP(I32, name##8, str "8")   \
   CASE_SIGN_OP(I32, name##16, str "16") \
   CASE_I32_OP(name, str "32")
-#define CASE_U32_OP(name, str)            \
-  CASE_I32_OP(name, str "32")             \
-  CASE_UNSIGNED_OP(I32, name##8, str "8") \
-  CASE_UNSIGNED_OP(I32, name##16, str "16")
-#define CASE_UNSIGNED_ALL_OP(name, str)     \
-  CASE_U32_OP(name, str)                    \
-  CASE_I64_OP(name, str "64")               \
-  CASE_UNSIGNED_OP(I64, name##8, str "8")   \
-  CASE_UNSIGNED_OP(I64, name##16, str "16") \
-  CASE_UNSIGNED_OP(I64, name##32, str "32")
+#define CASE_ATOMIC_LOAD(name, str)  \
+  CASE_INT_OP(name, str)             \
+  CASE_INT_OP(name##8U, str "8_u")   \
+  CASE_INT_OP(name##16U, str "16_u") \
+  CASE_I64_OP(name##32U, str "32_u")
+#define CASE_ATOMIC_STORE(name, str) \
+  CASE_INT_OP(name, str)             \
+  CASE_INT_OP(name##8U, str "8")     \
+  CASE_INT_OP(name##16U, str "16")   \
+  CASE_I64_OP(name##32U, str "32")
+#define CASE_ATOMIC_RMW(Name, str)                 \
+  CASE_INT_OP(Name, "atomic.rmw." str)             \
+  CASE_INT_OP(Name##8U, "atomic.rmw8." str "_u")   \
+  CASE_INT_OP(Name##16U, "atomic.rmw16." str "_u") \
+  CASE_I64_OP(Name##32U, "atomic.rmw32." str "_u")
 
 // static
 constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
@@ -363,8 +368,6 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_F64x2_OP(PromoteLowF32x4, "promote_low_f32x4")
 
     // Relaxed SIMD opcodes.
-    CASE_F32x4_OP(RecipApprox, "recip_approx")
-    CASE_F32x4_OP(RecipSqrtApprox, "recip_sqrt_approx")
     CASE_SIMDF_OP(Qfma, "qfma")
     CASE_SIMDF_OP(Qfms, "qfms")
     CASE_I8x16_OP(RelaxedSwizzle, "relaxed_swizzle");
@@ -378,20 +381,24 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_I32x4_OP(RelaxedTruncF32x4U, "relaxed_trunc_f32x4_u");
     CASE_I32x4_OP(RelaxedTruncF64x2SZero, "relaxed_trunc_f64x2_s_zero");
     CASE_I32x4_OP(RelaxedTruncF64x2UZero, "relaxed_trunc_f64x2_u_zero");
+    CASE_I16x8_OP(RelaxedQ15MulRS, "relaxed_q15mulr_s")
+    CASE_I16x8_OP(DotI8x16I7x16S, "dot_i8x16_i7x16_s")
+    CASE_I32x4_OP(DotI8x16I7x16AddS, "dot_i8x16_i7x16_add_s")
 
     // Atomic operations.
-    CASE_OP(AtomicNotify, "atomic.notify")
-    CASE_INT_OP(AtomicWait, "atomic.wait")
+    CASE_OP(AtomicNotify, "memory.atomic.notify")
+    CASE_OP(I32AtomicWait, "memory.atomic.wait32")
+    CASE_OP(I64AtomicWait, "memory.atomic.wait64")
     CASE_OP(AtomicFence, "atomic.fence")
-    CASE_UNSIGNED_ALL_OP(AtomicLoad, "atomic.load")
-    CASE_UNSIGNED_ALL_OP(AtomicStore, "atomic.store")
-    CASE_UNSIGNED_ALL_OP(AtomicAdd, "atomic.add")
-    CASE_UNSIGNED_ALL_OP(AtomicSub, "atomic.sub")
-    CASE_UNSIGNED_ALL_OP(AtomicAnd, "atomic.and")
-    CASE_UNSIGNED_ALL_OP(AtomicOr, "atomic.or")
-    CASE_UNSIGNED_ALL_OP(AtomicXor, "atomic.xor")
-    CASE_UNSIGNED_ALL_OP(AtomicExchange, "atomic.xchng")
-    CASE_UNSIGNED_ALL_OP(AtomicCompareExchange, "atomic.cmpxchng")
+    CASE_ATOMIC_LOAD(AtomicLoad, "atomic.load")
+    CASE_ATOMIC_STORE(AtomicStore, "atomic.store")
+    CASE_ATOMIC_RMW(AtomicAdd, "add")
+    CASE_ATOMIC_RMW(AtomicSub, "sub")
+    CASE_ATOMIC_RMW(AtomicAnd, "and")
+    CASE_ATOMIC_RMW(AtomicOr, "or")
+    CASE_ATOMIC_RMW(AtomicXor, "xor")
+    CASE_ATOMIC_RMW(AtomicExchange, "xchg")
+    CASE_ATOMIC_RMW(AtomicCompareExchange, "cmpxchg")
 
     // GC operations.
     CASE_OP(StructNewWithRtt, "struct.new_with_rtt")
@@ -416,6 +423,7 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(ArrayInitStatic, "array.init_static")
     CASE_OP(ArrayInitFromData, "array.init_from_data")
     CASE_OP(ArrayInitFromDataStatic, "array.init_from_data_static")
+    CASE_OP(ArrayInitFromElemStatic, "array.init_from_elem_static")
     CASE_OP(I31New, "i31.new")
     CASE_OP(I31GetS, "i31.get_s")
     CASE_OP(I31GetU, "i31.get_u")
@@ -424,6 +432,7 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(RefTestStatic, "ref.test_static")
     CASE_OP(RefCast, "ref.cast")
     CASE_OP(RefCastStatic, "ref.cast_static")
+    CASE_OP(RefCastNopStatic, "ref.cast_nop_static")
     CASE_OP(BrOnCast, "br_on_cast")
     CASE_OP(BrOnCastStatic, "br_on_cast_static")
     CASE_OP(BrOnCastFail, "br_on_cast_fail")
@@ -444,6 +453,31 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(BrOnNonData, "br_on_non_data")
     CASE_OP(BrOnNonI31, "br_on_non_i31")
     CASE_OP(BrOnNonArray, "br_on_non_array")
+    CASE_OP(StringNewWtf8, "string.new_wtf8")
+    CASE_OP(StringNewWtf16, "string.new_wtf16")
+    CASE_OP(StringConst, "string.const")
+    CASE_OP(StringMeasureUtf8, "string.measure_utf8")
+    CASE_OP(StringMeasureWtf8, "string.measure_wtf8")
+    CASE_OP(StringMeasureWtf16, "string.measure_wtf16")
+    CASE_OP(StringEncodeWtf8, "string.encode_wtf8")
+    CASE_OP(StringEncodeWtf16, "string.encode_wtf16")
+    CASE_OP(StringConcat, "string.concat")
+    CASE_OP(StringEq, "string.eq")
+    CASE_OP(StringIsUSVSequence, "string.is_usv_sequence")
+    CASE_OP(StringAsWtf8, "string.as_wtf8")
+    CASE_OP(StringViewWtf8Advance, "stringview_wtf8.advance")
+    CASE_OP(StringViewWtf8Encode, "stringview_wtf8.encode")
+    CASE_OP(StringViewWtf8Slice, "stringview_wtf8.slice")
+    CASE_OP(StringAsWtf16, "string.as_wtf16")
+    CASE_OP(StringViewWtf16Length, "stringview_wtf16.length")
+    CASE_OP(StringViewWtf16GetCodeUnit, "stringview_wtf16.get_codeunit")
+    CASE_OP(StringViewWtf16Encode, "stringview_wtf16.encode")
+    CASE_OP(StringViewWtf16Slice, "stringview_wtf16.slice")
+    CASE_OP(StringAsIter, "string.as_iter")
+    CASE_OP(StringViewIterCur, "stringview_iter.cur")
+    CASE_OP(StringViewIterAdvance, "stringview_iter.advance")
+    CASE_OP(StringViewIterRewind, "stringview_iter.rewind")
+    CASE_OP(StringViewIterSlice, "stringview_iter.slice")
 
     case kNumericPrefix:
     case kSimdPrefix:
@@ -482,12 +516,13 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
 #undef CASE_SIMDI_NO64X2_OP
 #undef CASE_SIGN_OP
 #undef CASE_UNSIGNED_OP
-#undef CASE_UNSIGNED_ALL_OP
 #undef CASE_ALL_SIGN_OP
 #undef CASE_CONVERT_OP
 #undef CASE_CONVERT_SAT_OP
 #undef CASE_L32_OP
-#undef CASE_U32_OP
+#undef CASE_ATOMIC_LOAD
+#undef CASE_ATOMIC_STORE
+#undef CASE_ATOMIC_RMW
 
 // static
 constexpr bool WasmOpcodes::IsPrefixOpcode(WasmOpcode opcode) {
@@ -573,14 +608,20 @@ constexpr bool WasmOpcodes::IsThrowingOpcode(WasmOpcode opcode) {
 
 // static
 constexpr bool WasmOpcodes::IsRelaxedSimdOpcode(WasmOpcode opcode) {
-  switch (opcode) {
-#define CHECK_OPCODE(name, opcode, _) case kExpr##name:
-    FOREACH_RELAXED_SIMD_OPCODE(CHECK_OPCODE)
+  // Relaxed SIMD opcodes have the SIMD prefix (0xfd) shifted by 12 bits, and
+  // nibble 3 must be 0x1. I.e. their encoded opcode is in [0xfd100, 0xfd1ff].
+  static_assert(kSimdPrefix == 0xfd);
+#define CHECK_OPCODE(name, opcode, _) \
+  static_assert((opcode & 0xfff00) == 0xfd100);
+  FOREACH_RELAXED_SIMD_OPCODE(CHECK_OPCODE)
 #undef CHECK_OPCODE
-    return true;
-    default:
-      return false;
-  }
+
+  return (opcode & 0xfff00) == 0xfd100;
+}
+
+constexpr byte WasmOpcodes::ExtractPrefix(WasmOpcode opcode) {
+  // See comment on {WasmOpcode} for the encoding.
+  return (opcode > 0xffff) ? opcode >> 12 : opcode >> 8;
 }
 
 namespace impl {
@@ -620,8 +661,14 @@ constexpr WasmOpcodeSig GetAsmJsOpcodeSigIndex(byte opcode) {
 
 constexpr WasmOpcodeSig GetSimdOpcodeSigIndex(byte opcode) {
 #define CASE(name, opc, sig) opcode == (opc & 0xFF) ? kSigEnum_##sig:
-  return FOREACH_SIMD_0_OPERAND_OPCODE(CASE) FOREACH_SIMD_MEM_OPCODE(CASE)
+  return FOREACH_SIMD_MVP_0_OPERAND_OPCODE(CASE) FOREACH_SIMD_MEM_OPCODE(CASE)
       FOREACH_SIMD_MEM_1_OPERAND_OPCODE(CASE) kSigEnum_None;
+#undef CASE
+}
+
+constexpr WasmOpcodeSig GetRelaxedSimdOpcodeSigIndex(byte opcode) {
+#define CASE(name, opc, sig) opcode == (opc & 0xFF) ? kSigEnum_##sig:
+  return FOREACH_RELAXED_SIMD_OPCODE(CASE) kSigEnum_None;
 #undef CASE
 }
 
@@ -646,6 +693,8 @@ constexpr std::array<WasmOpcodeSig, 256> kSimpleAsmjsExprSigTable =
     base::make_array<256>(GetAsmJsOpcodeSigIndex);
 constexpr std::array<WasmOpcodeSig, 256> kSimdExprSigTable =
     base::make_array<256>(GetSimdOpcodeSigIndex);
+constexpr std::array<WasmOpcodeSig, 256> kRelaxedSimdExprSigTable =
+    base::make_array<256>(GetRelaxedSimdOpcodeSigIndex);
 constexpr std::array<WasmOpcodeSig, 256> kAtomicExprSigTable =
     base::make_array<256>(GetAtomicOpcodeSigIndex);
 constexpr std::array<WasmOpcodeSig, 256> kNumericExprSigTable =
@@ -654,15 +703,26 @@ constexpr std::array<WasmOpcodeSig, 256> kNumericExprSigTable =
 }  // namespace impl
 
 constexpr const FunctionSig* WasmOpcodes::Signature(WasmOpcode opcode) {
-  switch (opcode >> 8) {
+  switch (ExtractPrefix(opcode)) {
     case 0:
+      DCHECK_GT(impl::kShortSigTable.size(), opcode);
       return impl::kCachedSigs[impl::kShortSigTable[opcode]];
-    case kSimdPrefix:
-      return impl::kCachedSigs[impl::kSimdExprSigTable[opcode & 0xFF]];
+    case kSimdPrefix: {
+      // Handle SIMD MVP opcodes (in [0xfd00, 0xfdff]).
+      if (opcode <= 0xfdff) {
+        DCHECK_LE(0xfd00, opcode);
+        return impl::kCachedSigs[impl::kSimdExprSigTable[opcode & 0xff]];
+      }
+      // Handle relaxed SIMD opcodes (in [0xfd100, 0xfd1ff]).
+      if (IsRelaxedSimdOpcode(opcode)) {
+        return impl::kCachedSigs[impl::kRelaxedSimdExprSigTable[opcode & 0xff]];
+      }
+      return nullptr;
+    }
     case kAtomicPrefix:
-      return impl::kCachedSigs[impl::kAtomicExprSigTable[opcode & 0xFF]];
+      return impl::kCachedSigs[impl::kAtomicExprSigTable[opcode & 0xff]];
     case kNumericPrefix:
-      return impl::kCachedSigs[impl::kNumericExprSigTable[opcode & 0xFF]];
+      return impl::kCachedSigs[impl::kNumericExprSigTable[opcode & 0xff]];
     default:
       UNREACHABLE();  // invalid prefix.
   }
@@ -681,8 +741,21 @@ constexpr MessageTemplate WasmOpcodes::TrapReasonToMessageId(
     return MessageTemplate::kWasm##name;
     FOREACH_WASM_TRAPREASON(TRAPREASON_TO_MESSAGE)
 #undef TRAPREASON_TO_MESSAGE
+    case kTrapCount:
+      UNREACHABLE();
+  }
+}
+
+constexpr TrapReason WasmOpcodes::MessageIdToTrapReason(
+    MessageTemplate message) {
+  switch (message) {
+#define MESSAGE_TO_TRAPREASON(name)  \
+  case MessageTemplate::kWasm##name: \
+    return k##name;
+    FOREACH_WASM_TRAPREASON(MESSAGE_TO_TRAPREASON)
+#undef MESSAGE_TO_TRAPREASON
     default:
-      return MessageTemplate::kNone;
+      UNREACHABLE();
   }
 }
 
